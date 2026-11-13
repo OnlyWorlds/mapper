@@ -1,7 +1,7 @@
 // The opened Map's slice of the store: what the builder is handed, and nothing more. The Maps,
 // the Map's Pins and Markers (and its ground's Markers), the Zones those Markers name, and the
 // bodies of its pinned elements. The SDK's readers then read exactly what this Map needs.
-import { linkId } from './rows';
+import { elementTypeOf, linkId } from './rows';
 import type { WorldStore } from './store';
 import type { Row } from './types';
 
@@ -79,7 +79,7 @@ export function bodiesToRead(store: WorldStore, mapId: string): Map<string, stri
   const out = new Map<string, string[]>();
   for (const p of store.onMap('pin', mapId)) {
     const e = typeof p.element_id === 'string' ? p.element_id : null;
-    const t = typeof p.element_type === 'string' ? p.element_type.toLowerCase() : null;
+    const t = elementTypeOf(p.element_type);
     if (!e || !t || store.has(e) || store.unseen.has(e)) continue;
     const list = out.get(t) ?? [];
     if (!list.includes(e)) list.push(e);

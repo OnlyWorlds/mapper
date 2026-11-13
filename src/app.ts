@@ -12,7 +12,7 @@ import { AddressWriter, type Address } from './core/address';
 import { DEMOS } from './core/demos';
 import { accountOrder, homeOrder, homeRow, roleWords, rungOf, type MapCard } from './core/home';
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
-import { isId, linkId, str } from './core/rows';
+import { elementTypeOf, isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
 import { bodiesToRead, chunks, sliceFor, zonesToRead } from './core/slice';
 import { WorldStore } from './core/store';
@@ -848,7 +848,7 @@ export class App {
         let bodyType: string | null = a.type;
         if (!a.type) {
           longWay = true;
-          const t = pins.map((p) => (typeof p.element_type === 'string' ? p.element_type.toLowerCase() : null)).find(Boolean);
+          const t = pins.map((p) => elementTypeOf(p.element_type)).find(Boolean);
           if (!t) return s.line('This address has no type, and no Pin this reader can see places this element, so it cannot be read.', 'error');
           bodyType = t;
           try {

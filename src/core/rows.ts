@@ -1,6 +1,19 @@
 // Small readers of a served body's plain keys. They read what a row says, never what a reader of
 // the SDK derives (map space, layouts and links are the SDK's).
+import { ELEMENT_TYPES } from '@onlyworlds/sdk';
 import type { Row } from './types';
+
+const TYPES: ReadonlySet<string> = new Set(ELEMENT_TYPES);
+
+/**
+ * A served element type (a Pin's `element_type`), lower-cased, only when it is one of the 22 element
+ * types: it becomes a request path, on the account token too, so a stranger's word never does.
+ */
+export function elementTypeOf(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.toLowerCase();
+  return TYPES.has(t) ? t : null;
+}
 
 /** A link as served: an id string, or an expanded object with an id. */
 export function linkId(v: unknown): string | null {
