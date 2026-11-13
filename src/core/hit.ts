@@ -22,40 +22,68 @@ function boxOf(it: Item): Box | null {
   }
 }
 
+/** The grid's cells across the frame's longer side. */
+const ACROSS = 64;
+/** An item whose box covers more cells than this is kept on one list every query scans. */
+export const OVERSIZE = 256;
+
+/**
+ * A grid bounded by the frame whatever the coordinates: the cells cover the frame, with one ring of
+ * edge cells that hold everything past it (a stranger's Pin at x 100000 on a 1000 map folds into
+ * the edge), so it never has more than (ACROSS + 2)² cells. An item and a query are clamped the
+ * same way, so a box that touches an item's box still finds it; the exact test is the caller's.
+ */
 export class Grid {
   readonly cell: number;
-  private cells = new Map<string, Item[]>();
+  private nx: number;
+  private ny: number;
+  private cells: (Item[] | undefined)[];
+  private oversize: Item[] = [];
+  /** Cell entries made, for a test to bound. */
+  entries = 0;
 
   constructor(items: readonly Item[], frameW: number, frameH: number) {
-    this.cell = Math.max(1, Math.max(frameW, frameH) / 64);
+    const fw = Number.isFinite(frameW) && frameW > 0 ? frameW : 1000;
+    const fh = Number.isFinite(frameH) && frameH > 0 ? frameH : 1000;
+    this.cell = Math.max(1e-9, Math.max(fw, fh) / ACROSS);
+    this.nx = Math.ceil(fw / this.cell) + 2;
+    this.ny = Math.ceil(fh / this.cell) + 2;
+    this.cells = new Array(this.nx * this.ny);
     for (const it of items) {
       const b = boxOf(it);
       if (!b) continue;
       const [gx0, gy0, gx1, gy1] = this.span(b);
+      if ((gx1 - gx0 + 1) * (gy1 - gy0 + 1) > OVERSIZE) {
+        this.oversize.push(it);
+        continue;
+      }
       for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
-        const k = gx + ',' + gy;
-        const list = this.cells.get(k);
+        const k = gx * this.ny + gy;
+        const list = this.cells[k];
         if (list) list.push(it);
-        else this.cells.set(k, [it]);
+        else this.cells[k] = [it];
+        this.entries++;
       }
     }
   }
 
+  /** A coordinate's cell, from 0 (everything before the frame) to n - 1 (everything past it). */
+  private at(v: number, n: number): number {
+    if (Number.isNaN(v)) return 0;
+    const g = Math.floor(v / this.cell) + 1;
+    return g < 0 ? 0 : g > n - 1 ? n - 1 : g;
+  }
+
   private span(b: Box): [number, number, number, number] {
-    const c = this.cell;
-    return [Math.floor(b[0] / c), Math.floor(b[1] / c), Math.floor(b[2] / c), Math.floor(b[3] / c)];
+    return [this.at(b[0], this.nx), this.at(b[1], this.ny), this.at(b[2], this.nx), this.at(b[3], this.ny)];
   }
 
   /** Every item whose box may touch this box. */
   query(b: Box): Set<Item> {
-    const out = new Set<Item>();
+    const out = new Set<Item>(this.oversize);
     const [gx0, gy0, gx1, gy1] = this.span(b);
-    if ((gx1 - gx0 + 1) * (gy1 - gy0 + 1) > 4096) {
-      for (const list of this.cells.values()) for (const it of list) out.add(it);
-      return out;
-    }
     for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
-      const list = this.cells.get(gx + ',' + gy);
+      const list = this.cells[gx * this.ny + gy];
       if (list) for (const it of list) out.add(it);
     }
     return out;
