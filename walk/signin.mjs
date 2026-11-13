@@ -29,6 +29,7 @@ const OLD = '44444444-4444-7444-8444-444444444444'; // on the list, but its maps
 const S1 = wid('11111111', 1); // Harbour plan, a top map
 const S2 = wid('11111111', 2); // Old town, under the Harbour plan
 const NOPIN = wid('11111111', 30); // an element no Pin places
+const ODD = wid('11111111', 40); // placed by a Pin whose element_type is "account": a stranger's word, never a path
 const J1 = wid('22222222', 1);
 const WORLDS = [
   { id: JOIN, name: 'Alpha Shared', role: 'collaborator', member_role: 'contributor', public_read: false, keys: [] },
@@ -43,6 +44,7 @@ const SALT_ROWS = {
   pin: [
     { id: wid('11111111', 10), type: 'pin', name: 'pin', map: S1, element_type: 'location', element_id: wid('11111111', 20), x: 100, y: 100 },
     { id: wid('11111111', 11), type: 'pin', name: 'pin', map: S1, element_type: 'location', element_id: wid('11111111', 21), x: 300, y: 200 },
+    { id: wid('11111111', 12), type: 'pin', name: 'pin', map: S1, element_type: 'account', element_id: ODD, x: 500, y: 300 },
   ],
   location: [{ id: wid('11111111', 20), type: 'location', name: 'Saltmere', partner: wid('11111111', 21) }, { id: wid('11111111', 21), type: 'location', name: 'Gull Rock' }, { id: NOPIN, type: 'location', name: 'The Drowned Bell' }],
 };
@@ -219,7 +221,15 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
 
   /** Mark the document, so a wait can tell a new page from the one the press left. */
   const mark = (page) => page.evaluate(() => (window.__old = true)).catch(() => {});
-  const settled = (page) => page.waitForFunction(() => !window.__old && !!window.__mapper && location.hostname === 'maps.onlyworlds.com' && !location.pathname.startsWith('/signin') && !document.body.innerText.includes('Signing in…'), null, { timeout: 15_000 });
+  /** A wait that says which step it was when it times out. */
+const step = async (label, p) => {
+  try {
+    return await p;
+  } catch (e) {
+    throw new Error(`${label}: ${String(e?.message ?? e).split('\n')[0]}`);
+  }
+};
+const settled = (page) => page.waitForFunction(() => !window.__old && !!window.__mapper && location.hostname === 'maps.onlyworlds.com' && !location.pathname.startsWith('/signin') && !document.body.innerText.includes('Signing in…'), null, { timeout: 15_000 });
 
   /** Press Sign in (the first one on the page), take keel's consent page when it comes, and wait for the mapper again. */
   async function signIn(page, { consent = 'continue' } = {}) {
@@ -306,7 +316,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     await page.waitForSelector('.demos .world-row');
     check(`${L}: Back returns to the home`, (await page.evaluate(() => location.pathname + location.search)) === '/' && (await demoNames(page)).length === 3);
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
-    await ctx.close();
+    await ctx.close().catch(() => {});
   });
 
   // B. The round trip with keel's consent page: the exchange first and alone, the address replaced,
@@ -321,7 +331,11 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).click();
     await page.waitForSelector('#go', { timeout: 15_000 });
     check(`${L}: the first sign-in shows keel's consent page`, keel.consentShown === 1);
+    const callbackAnswer = page.waitForResponse((r) => r.url().startsWith(CALLBACK), { timeout: 15_000 });
     await page.click('#go');
+    const cb = await callbackAnswer;
+    const cbh = await cb.allHeaders();
+    check(`${L}: the callback page as the host serves it: 200, never cached, exactly one Referrer-Policy and it is no-referrer`, cb.status() === 200 && cbh['cache-control'] === 'no-store' && cbh['referrer-policy'] === 'no-referrer', JSON.stringify({ status: cb.status(), cache: cbh['cache-control'], referrer: cbh['referrer-policy'] }));
     await waitFor(() => keel.tokenAsked === 1, 10_000);
     await page.waitForTimeout(400);
     const during = await page.evaluate(() => ({ text: document.body.innerText, href: location.href, buttons: document.querySelectorAll('main button, main a, main input').length }));
@@ -385,6 +399,16 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     await page.click('.element-maps .map-row:has(.row-name:text-is("Old town"))');
     await page.waitForFunction(() => window.__mapper.scene?.complete, null, { timeout: 15_000 });
     check(`${vp} one press opens any of them`, (await page.textContent('.map-name')) === 'Old town' && (await page.evaluate(() => location.search)) === `?world=${SALT}&map=${S2}`);
+    // A Pin's element_type is never a request path: "account" on the token reads no account route,
+    // neither on the map nor the long way (an element address with no type).
+    await page.evaluate((u) => {
+      history.pushState(null, '', u);
+      dispatchEvent(new PopStateEvent('popstate'));
+    }, `/?world=${SALT}&element=${ODD}`);
+    await page.waitForSelector('.status-page .error, .status-page .failure, .element-head, .element-maps', { timeout: 15_000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    const acct = keel.calls.filter((c) => c.path.startsWith('/api/v2/account') && c.path !== '/api/v2/account/worlds' && c.m !== 'DELETE');
+    check(`${L}: a Pin's element_type "account" never becomes a request on the token`, acct.length === 0 && (await page.textContent('.status-page')).includes('This address has no type, and no Pin this reader can see places this element'), acct.map((c) => c.path + c.q).join(', ') || (await page.textContent('.status-page')));
     check(`${L}: no world off the account's list was read with the token`, keel.offList.length === 0, keel.offList.join(', '));
     await page.evaluate(() => {
       history.pushState(null, '', '/');
@@ -404,7 +428,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     check(`${L}: and says it is removed, with the shared-computer line`, (await page.textContent('.said')).startsWith(SIGNED_OUT) && (await page.textContent('.said')).includes('sign out of onlyworlds.com too'));
     check(`${L}: the home is a stranger's again`, (await page.locator('.mine').count()) === 0 && (await demoNames(page)).length === 3 && (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 1);
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
-    await ctx.close();
+    await ctx.close().catch(() => {});
   });
 
   // C. Back after a sign-in through the consent page, a consented sign-in (no new history entry),
@@ -430,7 +454,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
 
     // A sign-in with consent kept: keel answers at once, and the round trip adds no history entry.
     await page.goto(`${PROD}/`);
-    await page.waitForSelector('.demos .world-row');
+    await step('the home after a fresh load', page.waitForSelector('.demos .world-row'));
     const h0 = await page.evaluate(() => history.length);
     await signIn(page);
     await page.waitForSelector('.mine .world-row');
@@ -440,7 +464,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     // A reload asks again, and the token is revoked as the page goes.
     const t2 = tokenOf(keel, keel.minted - 1);
     await page.reload({ waitUntil: 'commit' });
-    await page.waitForSelector('.demos .world-row');
+    await step('the home after a reload', page.waitForSelector('.demos .world-row'));
     check(`${L}: a reload is signed out`, !(await signedIn(page)) && (await page.locator('.mine').count()) === 0 && (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 1);
     await leftRevoke(L, page, keel, t2, 'a reload');
 
@@ -450,7 +474,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     const t3 = tokenOf(keel, keel.minted - 1);
     await page.goto(`${OTHER}/`);
     await page.goBack();
-    await page.waitForSelector('.demos .world-row', { timeout: 15_000 });
+    await step('the home after Back from another site', page.waitForSelector('.demos .world-row', { timeout: 15_000 }));
     check(`${L}: Back from another site is signed out`, !(await signedIn(page)));
     await leftRevoke(L, page, keel, t3, 'leaving for another site');
 
@@ -486,7 +510,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     await page.waitForSelector(`.said:has-text("${LEFT}")`, { timeout: 15_000 });
     check(`${L}: and the page is signed out, saying why`, !(await signedIn(page)));
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
-    await ctx.close();
+    await ctx.close().catch(() => {});
   });
 
   // D. The sign-in ends mid-session (revoked in Account settings): one line, never a failure per row;
@@ -523,7 +547,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     check(`${L}: the map page on the token goes to the home, a stranger's`, (await page.evaluate(() => location.search)) === '' && !(await signedIn(page)) && (await page.locator('.mine').count()) === 0 && (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 1);
     check(`${L}: nothing more is read on the token after its 401`, after.length === 1, after.map((c) => c.path).join(', '));
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
-    await ctx.close();
+    await ctx.close().catch(() => {});
   });
 
   // E. A 401 while the home reads its rows; Sign out with reads in flight.
@@ -555,7 +579,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     check(`${L}: Sign out with reads in flight stops them, revokes, and nothing paints after`, del >= 0 && later.length === 0 && (await page.locator('.mine').count()) === 0 && (await page.textContent('.said')).startsWith(SIGNED_OUT), `${later.length} reads after the revoke`);
     keel.delayMs = 0;
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
-    await ctx.close();
+    await ctx.close().catch(() => {});
   });
 
   // F. The edges: Cancel, a world not public offers Sign in back to it, the stale record swept, no storage.
@@ -588,7 +612,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     await page.waitForSelector('.demos .world-row');
     check(`${L}: a record older than an hour is swept at load`, (await page.evaluate(() => localStorage.getItem('ow_signin:maps') ?? localStorage.getItem('mapper.signin.at'))) === null);
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
-    await ctx.close();
+    await ctx.close().catch(() => {});
 
     const ns = await session(WORLDS, { noStorage: true });
     await ns.page.goto(`${PROD}/`);
@@ -596,7 +620,7 @@ export async function signinWalk({ browser, which, vp, opts, check, dist = 'dist
     await ns.page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).click();
     await ns.page.waitForSelector(`.ways .said:has-text("${NO_STORAGE}")`, { timeout: 10_000 });
     check(`${L}: a browser with no storage is told so, and nothing leaves for keel`, ns.keel.authorized === 0 && ns.page.url() === `${PROD}/`);
-    await ns.ctx.close();
+    await ns.ctx.close().catch(() => {});
   });
 }
 

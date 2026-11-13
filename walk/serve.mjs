@@ -11,8 +11,9 @@ export function serve(dist = 'dist', port = 4187, host = '127.0.0.1', { drop = [
   const server = createServer((req, res) => {
     const a = site.answer(req.url);
     for (const d of drop) delete a.headers[d];
-    // Every answer of the walk's server is uncached, so a control build never reads the other's.
-    res.writeHead(a.status, { ...a.headers, 'Cache-Control': a.headers['Cache-Control'] ?? 'no-store' });
+    // The host's headers as they are, Cache-Control included (no-store only where _headers says it, so
+    // a walk can see the callback's rule go missing); a control build is served on its own port.
+    res.writeHead(a.status, a.headers);
     res.end(req.method === 'HEAD' ? undefined : a.body);
   });
   return new Promise((ok) => server.listen(port, host, () => ok({ url: `http://${host}:${port}`, close: () => new Promise((c) => server.close(c)) })));

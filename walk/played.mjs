@@ -252,6 +252,11 @@ for (const [vp, opts] of [
     check('the callback with a slash is the host\'s redirect to it, the query kept', slash.status === 307 && slash.headers.get('location') === '/signin/callback?code=x&state=y', `${slash.status} ${slash.headers.get('location')}`);
     const nope = await fetch(`${site.url}/nothing`);
     check('any other unknown path is the 404 page, never the app', nope.status === 404 && (await nope.text()).includes('There is no page at this address'), String(nope.status));
+    // As the host answers (read live): paths are case-exact, and needless escapes redirect first.
+    const cased = await fetch(`${site.url}/Signin/callback?code=x&state=y`, { redirect: 'manual' });
+    check('the callback path is case-exact: /Signin/callback is the 404 page', cased.status === 404, String(cased.status));
+    const escaped = await fetch(`${site.url}/signin/%63allback?code=x&state=y`, { redirect: 'manual' });
+    check('an escaped callback path redirects to its plain form, the query kept', escaped.status === 307 && escaped.headers.get('location') === '/signin/callback?code=x&state=y', `${escaped.status} ${escaped.headers.get('location')}`);
   });
 
   // 2. A world that is not public, or not there: one sentence and the key form.
