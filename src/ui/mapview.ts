@@ -20,7 +20,7 @@ import { makeModes, type ModeHost, type ModeName } from './modes';
 
 export interface MapViewHost {
   world: { id: string; name: string };
-  waymarkReader: 'member' | 'public';
+  waymarkReader: 'member' | 'guest' | 'public';
   writer: AddressWriter;
   measure: boolean;
   infoOf(id: string): ElementInfo;

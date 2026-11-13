@@ -1,9 +1,20 @@
 import '@onlyworlds/sdk/waymark.css';
 import './style.css';
+import { isSignInCallback, startSignInCallback, sweepStaleRecord } from './auth/signin';
 import { App } from './app';
+
+// The callback's code leaves the address before any other request to OnlyWorlds, and the first route
+// waits for its outcome; on any other load, a round trip nobody came back from is dropped.
+const callback = isSignInCallback() ? startSignInCallback() : null;
+if (!callback) sweepStaleRecord();
 
 const root = document.getElementById('app')!;
 const app = new App(root);
+
+// The page is done with the token when it leaves; a page back from the back/forward cache held a
+// token it revoked, so it signs out.
+window.addEventListener('pagehide', () => app.pageHidden());
+window.addEventListener('pageshow', (e) => app.pageShown(e.persisted));
 
 // A read-only window for the walks: copies of what the page holds, never a way to change it, and
 // nothing kept once a map is left (the scene is read through the open map).
@@ -58,7 +69,11 @@ Object.defineProperty(window, '__mapper', {
       const s = app.map?.scene;
       return s ? s.items.filter((i) => i.kind === 'pin').map((i) => ({ id: i.id, element: i.element })) : [];
     },
+    /** Signed in or not: a yes or no, never the token. */
+    get signedIn() {
+      return app.signedIn;
+    },
   }),
 });
 
-void app.route();
+void app.start(callback);

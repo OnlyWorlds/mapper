@@ -22,6 +22,7 @@
   --label: #1d1f24;
   --halo: rgba(250, 249, 245, 0.9);
   --overlay: rgba(255, 255, 255, 0.9);
+  --on-accent: #ffffff;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
@@ -50,6 +51,7 @@
     --label: #ecebe6;
     --halo: rgba(15, 16, 18, 0.88);
     --overlay: rgba(27, 29, 33, 0.92);
+    --on-accent: #131417;
   }
 }
 
@@ -144,6 +146,40 @@ label { font-weight: 600; font-size: 0.95rem; }
 .readout { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 80px); background: var(--overlay); border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.5rem; font: 12px/1.35 var(--mono); }
 .world-name { overflow-wrap: anywhere; }
 
+/* The home: rows of worlds, each with its map cards in a row that scrolls sideways inside itself;
+   the page itself never scrolls sideways. */
+.home { max-width: 64rem; margin: 0 auto; padding: 1.5rem 16px 2.5rem; min-width: 0; }
+.home-head p { color: var(--muted); max-width: 42rem; }
+.said:not([hidden]) { display: block; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; padding: 0.5rem 0.75rem; margin: 0.8rem 0; max-width: 42rem; }
+.home-section { margin-top: 1.4rem; min-width: 0; }
+.home-section > h2 { margin-top: 1rem; }
+.mine + .demos { border-top: 1px solid var(--border); margin-top: 1.8rem; padding-top: 0.6rem; }
+.who { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.who p { margin: 0; }
+.mine .hint, .ways .hint { max-width: 42rem; }
+.world-row { margin: 0.9rem 0 1.1rem; min-width: 0; }
+.world-row.pending { min-height: 9.5rem; }
+.world-head { display: flex; align-items: baseline; gap: 0.15rem 0.6rem; flex-wrap: wrap; }
+.world-title { margin: 0; font-size: 1rem; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.world-role { color: var(--muted); font-size: 0.85rem; }
+.world-status { font-size: 0.85rem; margin: 0.25rem 0; }
+.world-status.note { color: var(--muted); }
+.world-row.folded { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.15rem 0.6rem; }
+.world-row.folded .world-status { margin: 0; }
+.cards { list-style: none; display: flex; gap: 0.6rem; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 0.35rem 2px 0.6rem; margin: 0.25rem 0 0; min-width: 0; }
+.cards > li { flex: 0 0 11.5rem; min-width: 0; scroll-snap-align: start; display: flex; }
+.map-card { display: flex; flex-direction: column; gap: 0.35rem; width: 100%; min-width: 0; min-height: 6.4rem; padding: 0.7rem 0.8rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); text-decoration: none; }
+.map-card:hover { border-color: var(--muted); }
+.map-card .mark { color: var(--accent); flex: none; }
+.card-name { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.card-kind { color: var(--muted); font-size: 0.85rem; margin-top: auto; }
+.map-card.all { background: var(--surface-2); border-style: dashed; justify-content: center; }
+.map-card.all .card-name { color: var(--hover); }
+.home .ways { margin: 1.8rem 0 0; padding: 0; max-width: 42rem; }
+.ways h2 { margin-top: 1.4rem; }
+button.signin { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; margin: 0.3rem 0; }
+button.signin:hover { border-color: var(--text); }
+
 /* A phone: the map fills the screen, the card and the list are sheets from the bottom. */
 @media (max-width: 640px) {
   .top { top: 6px; left: 6px; right: 6px; }
@@ -162,4 +198,7 @@ label { font-weight: 600; font-size: 0.95rem; }
   .mapview.peeking .panel { bottom: 0; }
   .zoom { bottom: calc(12px + env(safe-area-inset-bottom)); }
   .readout { bottom: auto; top: auto; left: 6px; bottom: 6px; max-width: calc(100% - 70px); font-size: 11px; }
+  /* Two and a half cards in a row: the half is the hint that the row goes on. */
+  .cards > li { flex-basis: calc((100% - 2 * 0.6rem) / 2.5); }
+  .map-card { padding: 0.6rem 0.65rem; min-height: 6rem; }
 }

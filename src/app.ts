@@ -1,9 +1,16 @@
 // The page: the address decides what is shown, and a person's press or gesture is the only thing
 // that writes it. Reads go one at a time through net/api.ts into the world store; each Map draws
-// what has arrived as each read lands.
-import { detectKeyKind, ELEMENT_TYPES, type OwWorldMeta } from '@onlyworlds/sdk';
+// what has arrived as each read lands. A world is held by its reader and its id (the public, a
+// pasted key, or the sign-in's account token), so one reading never stands in for another. Signed
+// in, a world on the account's list is always read with the token, from any row or link; any other
+// world is read as the public reads it.
+import { detectKeyKind, ELEMENT_TYPES, type OwAccountWorld, type OwWorldMeta } from '@onlyworlds/sdk';
 import { mountWaymark } from '@onlyworlds/sdk/waymark';
+import { revokeToken, type SignedIn } from './auth/account';
+import { beginSignIn, canSignIn, resumeFrom, signInCallbackLine, type SignInOutcome } from './auth/signin';
 import { AddressWriter, type Address } from './core/address';
+import { DEMOS } from './core/demos';
+import { accountOrder, homeOrder, homeRow, roleWords, rungOf, type MapCard } from './core/home';
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
 import { isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
@@ -11,25 +18,26 @@ import { bodiesToRead, chunks, sliceFor, zonesToRead } from './core/slice';
 import { WorldStore } from './core/store';
 import type { ElementInfo, Row } from './core/types';
 import { plural, progressLine, type ReadStep } from './core/words';
-import { Api, asFailure, failureWords, ReadFailure } from './net/api';
+import { Api, asFailure, ENDED_LINE, failureWords, ReadFailure, ReadQueue } from './net/api';
 import { button, clear, h, isPhone, typeName } from './ui/dom';
+import { allCardText, mapCardBody, worldRow } from './ui/home';
 import { MapView, type MapStatus } from './ui/mapview';
 
 /** Pin counts per Map are read only when every Pin of the world fits one read. */
 export const ONE_READ = 1000;
 
-export const EXAMPLES = [
-  { id: '0695db52-5433-7332-8000-db7fe10da375', name: 'Moppetopia', words: 'a small demo world' },
-  { id: '49501a68-179b-4a3c-8eaf-7f46f73d5fd2', name: 'Sikelia', words: 'a large one, with 214 maps' },
-];
+/** Who a world is read as: the public (no key), a pasted key, or the sign-in's account token. */
+export type Reader = 'public' | 'key' | 'account';
 
 interface WorldState {
   id: string;
+  reader: Reader;
   api: Api;
   store: WorldStore;
   meta: OwWorldMeta;
   rung: ReaderRung;
-  keyed: boolean;
+  /** The account's row for this world, when it is read on the token. */
+  account: OwAccountWorld | null;
   /** Reads that are done, by name: `maps`, `pins`, `pins@<map>`, `markers@<map>`. */
   done: Set<string>;
   pinCounts: Map<string, number> | null;
@@ -40,7 +48,22 @@ interface WorldState {
   onWait: (line: string | null) => void;
 }
 
-const WAIT = (n: number) => `OnlyWorlds lets a visitor read 60 times a minute; reading again in ${n} s.`;
+const HOME: Address = { world: null, type: null, element: null, map: null, at: null, measure: false };
+
+/** The line while a 429 is waited out: a visitor's budget, or the account's. */
+const waitWords = (reader: Reader, n: number) =>
+  reader === 'account' ? `OnlyWorlds asks for a pause between reads; reading again in ${n} s.` : `OnlyWorlds lets a visitor read 60 times a minute; reading again in ${n} s.`;
+
+const SIGN_IN_HINT = 'The mapper only reads and never makes keys. Your sign-in is an account token held in this page’s memory: it is removed when you sign out, tried when you leave the page, and ends by itself six hours after you signed in. A reload asks you to sign in again.';
+const SIGNED_OUT_LINE = 'Signed out, and the sign-in is removed from your OnlyWorlds account. On a shared computer, sign out of onlyworlds.com too: until you do, the next Sign in here goes straight through.';
+const UNCONFIRMED_LINE = 'Signed out here, but OnlyWorlds did not confirm the sign-in was removed, so it may still be live. Remove it in Account settings on onlyworlds.com.';
+const LEFT_LINE = 'You left the page, so the mapper signed you out.';
+
+function waymarkReader(ws: WorldState): 'member' | 'guest' | 'public' {
+  if (ws.reader === 'public') return 'public';
+  if (ws.reader === 'account' && ws.account?.role !== 'owner' && ws.account?.member_role === 'guest') return 'guest';
+  return 'member';
+}
 
 export class App {
   readonly writer: AddressWriter;
@@ -53,6 +76,23 @@ export class App {
   private page: HTMLElement;
   /** Aborted when the page is left: its reads in flight stop, its queued reads never start. */
   private leave = new AbortController();
+  /** The sign-in: one account token, in this object's memory only. */
+  private session: SignedIn | null = null;
+  /** The account's worlds, owned then joined, read once per sign-in. */
+  private mine: OwAccountWorld[] | null = null;
+  /** Every reader on the token, stopped together when the sign-in ends. */
+  private onToken = new Set<Api>();
+  /** The Maps lists the home read on the token, by world: handed to the world's page. */
+  private homeMaps = new Map<string, Row[]>();
+  /** The home's one queue: its rows are read one after another, never in a fan-out. */
+  private homeQueue = new ReadQueue();
+  /** A line the next home says once (signed out, the sign-in ended, a refused return). */
+  private notice: string | null = null;
+  /** The callback's exchange is running: nothing routes until its outcome. */
+  private exchanging = false;
+  /** The page has started to leave: a token that arrives now is revoked on arrival. */
+  private leaving = false;
+  private expiry: ReturnType<typeof setTimeout> | null = null;
 
   constructor(root: HTMLElement) {
     this.writer = new AddressWriter(history, () => location.search);
@@ -62,6 +102,11 @@ export class App {
       this.writer.cancelPending();
       void this.route();
     });
+  }
+
+  /** Signed in or not, for the walks: never the token. */
+  get signedIn(): boolean {
+    return this.session !== null;
   }
 
   /** A press: a new entry, then the page follows it. */
@@ -79,12 +124,185 @@ export class App {
     this.page.className = 'page';
   }
 
+  private says(line: string): void {
+    this.page.append(h('section', { class: 'intro' }, h('h1', {}, 'OnlyWorlds mapper'), h('p', { class: 'progress', role: 'status' }, line)));
+  }
+
+  // ---- the sign-in
+
+  /** The first route: on the callback, only after the exchange's outcome, with nothing to press meanwhile. */
+  async start(callback: Promise<SignInOutcome> | null): Promise<void> {
+    if (callback) {
+      this.exchanging = true;
+      this.teardown();
+      this.says('Signing in…');
+      const outcome = await callback;
+      this.exchanging = false;
+      if (outcome.ok) {
+        const s: SignedIn = { token: outcome.token, tokenId: outcome.tokenId, username: outcome.username, expiresAt: outcome.expiresAt };
+        // A token that arrives after the page started to leave is revoked on arrival.
+        if (this.leaving) {
+          void revokeToken(s);
+          this.notice = LEFT_LINE;
+          this.replaceAddress('/');
+        } else {
+          this.beginSession(s);
+          this.replaceAddress(outcome.resume ?? '/');
+        }
+      } else {
+        this.notice = signInCallbackLine(outcome);
+        this.replaceAddress('/');
+      }
+    }
+    await this.route();
+  }
+
+  private replaceAddress(url: string): void {
+    try {
+      history.replaceState(null, '', url);
+    } catch {
+      /* the address stays */
+    }
+  }
+
+  private beginSession(s: SignedIn): void {
+    this.session = s;
+    this.mine = null;
+    // keel ends the token at its time; the page ends the sign-in then too, rather than wait for a 401.
+    const left = s.expiresAt ? Date.parse(s.expiresAt) - Date.now() : Number.NaN;
+    if (Number.isFinite(left) && left > 0 && left < 2 ** 31 - 1) this.expiry = setTimeout(() => this.endSession(ENDED_LINE), left);
+  }
+
+  /** Stop every read on the token, and forget the sign-in and everything read on it. */
+  private dropSession(): SignedIn | null {
+    const s = this.session;
+    for (const api of this.onToken) api.close();
+    this.onToken.clear();
+    if (this.world?.reader === 'account') this.world = null;
+    if (this.expiry) clearTimeout(this.expiry);
+    this.expiry = null;
+    this.session = null;
+    this.mine = null;
+    this.homeMaps.clear();
+    return s;
+  }
+
+  /**
+   * The sign-in ended (a 401 on the token, its time, a page back from the cache), said once: every
+   * read on the token stops; the home redraws as a stranger's in place; a page read on the token
+   * goes to the home; a public world's page stays where it is, and the line waits for the home.
+   */
+  private endSession(line: string): void {
+    if (!this.session) return;
+    const a = this.writer.current();
+    const onTokenPage = !!a.world && (this.mine === null || this.readerFor(a.world) === 'account');
+    this.dropSession();
+    this.notice = line;
+    if (!a.world) void this.route();
+    else if (onTokenPage) this.go(HOME);
+  }
+
+  /** The page is leaving: its token is revoked as it goes. */
+  pageHidden(): void {
+    this.leaving = true;
+    if (this.session) void revokeToken(this.session);
+  }
+
+  /** The page is shown again. Back from the back/forward cache it holds a token it revoked, so it signs out. */
+  pageShown(persisted: boolean): void {
+    this.leaving = false;
+    if (persisted && this.session) {
+      // One more revoke costs a request and covers a hide that lost its own.
+      void revokeToken(this.session);
+      this.endSession(LEFT_LINE);
+    }
+  }
+
+  /** Sign out: the reads in flight stop first, then the token is removed, then the page says which happened. */
+  private async signOut(): Promise<void> {
+    const s = this.dropSession();
+    if (!s) return;
+    this.gen++;
+    this.teardown();
+    this.says('Signing out…');
+    const out = await revokeToken(s);
+    this.notice = out === 'revoked' ? SIGNED_OUT_LINE : UNCONFIRMED_LINE;
+    if (this.writer.current().world) this.go(HOME);
+    else void this.route();
+  }
+
+  /** Sign in with OnlyWorlds, offered only on the registered origin and only when signed out. */
+  private signInButton(said: HTMLElement): HTMLElement | null {
+    if (this.session || !canSignIn()) return null;
+    return button('Sign in with OnlyWorlds', () => {
+      said.hidden = false;
+      said.textContent = 'Going to OnlyWorlds…';
+      beginSignIn(resumeFrom(location.pathname, location.search)).catch((err: unknown) => {
+        said.textContent = err instanceof Error ? err.message : 'Signing in did not start. Try again.';
+      });
+    }, { class: 'signin' });
+  }
+
+  private accountRow(id: string): OwAccountWorld | null {
+    return (this.session && this.mine?.find((w) => w.id === id)) || null;
+  }
+
+  private readerFor(id: string): Reader {
+    if (this.accountRow(id)) return 'account';
+    if (this.key && this.keyWorld === id) return 'key';
+    return 'public';
+  }
+
+  /** A reader on the token: stopped with the others when the sign-in ends; its first 401 ends it. */
+  private tokenApi(world: string | null, opts: { queue?: ReadQueue; onWait?: (n: number) => void } = {}): Api {
+    const api = new Api({ world, key: null, token: this.session!.token, onEnded: () => this.endSession(ENDED_LINE), queue: opts.queue, onWait: opts.onWait });
+    this.onToken.add(api);
+    return api;
+  }
+
+  private release(api: Api): void {
+    api.close();
+    this.onToken.delete(api);
+  }
+
+  /** The account's worlds, read once per sign-in (one call: the list is unpaged), owned then joined. */
+  private async ensureMine(signal: AbortSignal): Promise<OwAccountWorld[]> {
+    if (this.mine) return this.mine;
+    const s = this.session;
+    if (!s) throw new ReadFailure('stopped', null, 'signed out');
+    const api = this.tokenApi(null);
+    try {
+      const got = await api.accountWorlds(signal);
+      if (this.session !== s) throw new ReadFailure('stopped', null, 'signed out');
+      this.mine = accountOrder((Array.isArray(got) ? got : []).filter((w) => w && isId(w.id)));
+      return this.mine;
+    } finally {
+      this.release(api);
+    }
+  }
+
   async route(): Promise<void> {
+    if (this.exchanging) return;
     const gen = ++this.gen;
     const a = this.writer.current();
     this.teardown();
-    if (!a.world) return this.front(null);
-    if (!isId(a.world)) return this.front('This is not a world id. A world id looks like 0695db52-5433-7332-8000-db7fe10da375.');
+    if (!a.world) return this.home(gen, null);
+    if (!isId(a.world)) return this.home(gen, 'This is not a world id. A world id looks like 0695db52-5433-7332-8000-db7fe10da375.');
+    // Signed in, which reader a world is read as waits on the account's list.
+    if (this.session && !this.mine) {
+      const s = this.statusPage('Opening the world');
+      s.line('Reading your worlds.');
+      try {
+        await this.ensureMine(this.leave.signal);
+      } catch (err) {
+        if (gen !== this.gen) return;
+        const f = asFailure(err);
+        if (f.kind === 'ended' || f.kind === 'stopped') return;
+        return s.fail(failureWords(f, 'account’s worlds'), () => void this.route());
+      }
+      if (gen !== this.gen) return;
+      clear(this.page);
+    }
     const ws = await this.ensureWorld(a.world, gen);
     if (!ws || gen !== this.gen) return;
     if (a.element) return this.elementPage(ws, a, gen);
@@ -92,10 +310,170 @@ export class App {
     return this.mapsPage(ws, gen);
   }
 
-  // ---- the front page and the key
+  // ---- the home: worlds and their maps, then the ways in
 
-  private front(error: string | null): void {
+  private home(gen: number, error: string | null): void {
     document.title = 'OnlyWorlds mapper';
+    const signal = this.leave.signal;
+    const notice = this.notice;
+    this.notice = null;
+    const said = h('p', { class: 'said', role: 'status' }, notice ?? '');
+    said.hidden = !notice;
+    const home = h('div', { class: 'home' },
+      h('header', { class: 'home-head' },
+        h('h1', {}, 'OnlyWorlds mapper'),
+        h('p', {}, 'See the maps of an OnlyWorlds world: its pictured maps with their Pins and Zones, and its layouts, where linked elements are joined by lines. The mapper only reads; it never changes a world.')),
+      said);
+    if (this.session) home.append(this.mineSection(gen, signal));
+    home.append(this.demoSection(), this.waysSection(error));
+    this.page.append(home);
+  }
+
+  /** The demo worlds from the list built into the page: nothing is read until a press. */
+  private demoSection(): HTMLElement {
+    const mine = new Set(this.mine?.map((w) => w.id) ?? []);
+    const shown = DEMOS.filter((d) => !mine.has(d.id));
+    const sec = h('section', { class: 'home-section demos', 'aria-labelledby': 'demos-h' }, h('h2', { id: 'demos-h' }, this.session ? 'Public demo worlds' : 'Public worlds to try'));
+    sec.hidden = shown.length === 0;
+    for (const d of shown) {
+      const row = worldRow({ id: d.id, name: d.name, role: d.words, headingId: `demo-${d.id}`, button });
+      row.setCards(this.cardsFor(d.id, d.cards, d.total));
+      sec.append(row.el);
+    }
+    return sec;
+  }
+
+  /** A row's cards: its first maps, then one card into the world's page; none when it has no maps. */
+  private cardsFor(world: string, cards: readonly MapCard[], total: number): HTMLElement[] | null {
+    if (total === 0) return null;
+    const out: HTMLElement[] = cards.map((c) => this.linkTo({ ...HOME, world, map: c.id }, 'map-card', ...mapCardBody(c)));
+    out.push(this.linkTo({ ...HOME, world }, 'map-card all', h('span', { class: 'card-name' }, allCardText(total)), h('span', { class: 'card-kind' }, 'every map, by name')));
+    return out;
+  }
+
+  /** Signed in: who, Sign out, and the account's worlds, each row's maps read as it comes into view. */
+  private mineSection(gen: number, signal: AbortSignal): HTMLElement {
+    const s = this.session!;
+    const status = h('p', { class: 'progress', role: 'status' }, 'Reading your worlds.');
+    const count = h('p', { class: 'note' });
+    count.hidden = true;
+    const rows = h('div', { class: 'world-rows' });
+    const sec = h('section', { class: 'home-section mine', 'aria-labelledby': 'mine-h' },
+      h('div', { class: 'who' }, h('p', {}, 'Signed in as ', h('strong', {}, s.username), '.'), button('Sign out', () => void this.signOut(), { class: 'signout' })),
+      h('p', { class: 'hint' }, SIGN_IN_HINT),
+      h('h2', { id: 'mine-h' }, 'Your worlds'), status, count, rows);
+    const load = async () => {
+      clear(status);
+      status.className = 'progress';
+      status.setAttribute('role', 'status');
+      status.append('Reading your worlds.');
+      status.hidden = false;
+      let mine: OwAccountWorld[];
+      try {
+        mine = await this.ensureMine(signal);
+      } catch (err) {
+        if (gen !== this.gen) return;
+        const f = asFailure(err);
+        if (f.kind === 'ended' || f.kind === 'stopped') return;
+        clear(status);
+        status.className = 'failure';
+        status.setAttribute('role', 'alert');
+        status.append(failureWords(f, 'account’s worlds') + ' ', button('Try again', () => void load(), { class: 'retry' }));
+        return;
+      }
+      if (gen !== this.gen) return;
+      status.hidden = true;
+      // A demo world on the account's list is shown once, in the person's own rows.
+      this.page.querySelector('.home-section.demos')?.replaceWith(this.demoSection());
+      if (!mine.length) {
+        status.hidden = false;
+        status.className = 'note';
+        status.textContent = 'This account has no worlds yet. Make one on onlyworlds.com.';
+        return;
+      }
+      if (mine.length > 1) {
+        count.hidden = false;
+        count.textContent = `${plural(mine.length, 'world')}, yours first, then the ones you joined. A row’s maps are read when it comes into view.`;
+      }
+      this.drawMine(gen, mine, rows, signal);
+    };
+    void load();
+    return sec;
+  }
+
+  /**
+   * The account's rows. A row's Maps list is read (one call, on the token, in the home's one queue)
+   * when the row comes into view, and the next row with it; a list read once is kept for the tab and
+   * handed to the world's page.
+   */
+  private drawMine(gen: number, mine: readonly OwAccountWorld[], box: HTMLElement, signal: AbortSignal): void {
+    const starts: (() => void)[] = [];
+    const els: HTMLElement[] = [];
+    mine.forEach((w, i) => {
+      const row = worldRow({ id: w.id, name: w.name, role: roleWords(w), headingId: `mine-${i}`, button });
+      row.el.dataset.index = String(i);
+      els.push(row.el);
+      box.append(row.el);
+      const draw = (maps: Row[]) => {
+        row.el.classList.remove('pending');
+        const r = homeRow(maps);
+        row.setStatus(r.total ? null : 'No maps this reader can see.', 'note');
+        row.setCards(this.cardsFor(w.id, r.cards, r.total));
+      };
+      const read = async () => {
+        const held = this.homeMaps.get(w.id);
+        if (held) return draw(held);
+        if (!this.session || signal.aborted) return;
+        row.setStatus('Reading its maps.', 'progress');
+        const api = this.tokenApi(w.id, { queue: this.homeQueue, onWait: (n) => gen === this.gen && row.setStatus(n ? waitWords('account', n) : 'Reading its maps.', n ? 'wait' : 'progress') });
+        try {
+          const maps = await api.all('map', undefined, undefined, undefined, signal);
+          this.homeMaps.set(w.id, maps);
+          if (gen === this.gen) draw(maps);
+        } catch (err) {
+          if (gen !== this.gen) return;
+          const f = asFailure(err);
+          if (f.kind === 'ended' || f.kind === 'stopped') return;
+          // A world on the list the account can no longer read says so, never a blank.
+          const text = f.kind === 'not-found' || f.status === 403 ? 'OnlyWorlds no longer lets this account read this world.' : failureWords(f, 'maps');
+          row.el.classList.remove('pending');
+          row.setStatus(text, 'failure', () => void read());
+        } finally {
+          this.release(api);
+        }
+      };
+      let started = false;
+      starts.push(() => {
+        if (started) return;
+        started = true;
+        void read();
+      });
+      if (this.homeMaps.has(w.id)) starts[i]();
+      else {
+        // A row waiting for its read keeps a drawn row's height, so the rows in view stay the rows read.
+        row.el.classList.add('pending');
+        row.setStatus('Its maps are read when the row comes into view.', 'note');
+      }
+    });
+    if (typeof IntersectionObserver !== 'function') {
+      starts.slice(0, 4).forEach((go) => go());
+      return;
+    }
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        const i = Number((e.target as HTMLElement).dataset.index);
+        starts[i]?.();
+        starts[i + 1]?.();
+        io.unobserve(e.target);
+      }
+    });
+    for (const el of els) io.observe(el);
+    signal.addEventListener('abort', () => io.disconnect(), { once: true });
+  }
+
+  /** The other ways in: Sign in with OnlyWorlds (signed out, on the registered origin), a world id, a key. */
+  private waysSection(error: string | null): HTMLElement {
     const input = h('input', { id: 'world-id', name: 'world', autocomplete: 'off', spellcheck: 'false', placeholder: '0695db52-5433-7332-8000-db7fe10da375' });
     const msg = h('p', { class: 'error', role: 'alert' }, error ?? '');
     msg.hidden = !error;
@@ -110,23 +488,33 @@ export class App {
       }
       this.go({ ...this.writer.current(), world: v, map: null, element: null, type: null, at: null });
     });
-    const examples = h('ul', { class: 'examples' });
-    for (const ex of EXAMPLES) examples.append(h('li', {}, this.link(ex.name, { world: ex.id, map: null, element: null, type: null, at: null, measure: false }), `, ${ex.words}`));
-    this.page.append(
-      h('section', { class: 'intro' },
-        h('h1', {}, 'OnlyWorlds mapper'),
-        h('p', {}, 'See the maps of an OnlyWorlds world: its pictured maps with their Pins and Zones, and its layouts, where linked elements are joined by lines. The mapper only reads; it never changes a world.'),
-        form, msg,
-        h('p', {}, 'Public worlds to try:'), examples),
-      h('section', { class: 'intro' }, h('h2', {}, 'A world of your own'), this.keyForm(null)),
-    );
+    const going = h('p', { class: 'said', role: 'status' });
+    going.hidden = true;
+    const signIn = this.signInButton(going);
+    return h('section', { class: 'intro ways', 'aria-label': 'Other ways in' },
+      signIn ? h('h2', {}, 'Your own worlds') : null,
+      signIn ? h('p', {}, 'Sign in to see the worlds you own and the ones you joined, each with its maps.') : null,
+      signIn,
+      signIn ? going : null,
+      signIn ? h('p', { class: 'hint' }, SIGN_IN_HINT) : null,
+      h('h2', {}, 'Open a world by its id'),
+      form, msg,
+      h('h2', {}, 'A world by its key'), this.keyForm(null));
   }
 
+  // ---- the key
+
   private link(text: string, to: Address): HTMLAnchorElement {
+    return this.linkTo(to, undefined, text);
+  }
+
+  /** A link that is a press (a new entry) for a plain click, and an ordinary link for a new tab. */
+  private linkTo(to: Address, cls: string | undefined, ...children: (Node | string)[]): HTMLAnchorElement {
     const url = new URLSearchParams();
     if (to.world) url.set('world', to.world);
     if (to.map) url.set('map', to.map);
-    const a = h('a', { href: `?${url}` }, text);
+    const q = url.toString();
+    const a = h('a', { href: q ? `/?${q}` : '/', class: cls }, ...children);
     a.addEventListener('click', (e) => {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
       e.preventDefault();
@@ -206,7 +594,7 @@ export class App {
   }
 
   private useKey(key: string, world: string, kind: string): void {
-    this.world?.api.close();
+    if (this.world) this.release(this.world.api);
     this.world = null;
     this.key = key;
     this.keyWorld = world;
@@ -232,23 +620,26 @@ export class App {
   }
 
   private async ensureWorld(id: string, gen: number): Promise<WorldState | null> {
-    if (this.world && this.world.id === id) return this.world;
-    this.world?.api.close();
+    const reader = this.readerFor(id);
+    if (this.world && this.world.id === id && this.world.reader === reader) return this.world;
+    if (this.world) this.release(this.world.api);
     this.world = null;
-    const keyed = !!this.key && this.keyWorld === id;
+    const account = reader === 'account' ? this.accountRow(id) : null;
     const s = this.statusPage('Opening the world');
     s.line('Reading the world.');
     let waitLine: (l: string | null) => void = () => {};
-    const api = new Api({ world: id, key: keyed ? this.key : null, onWait: (n) => waitLine(n ? WAIT(n) : null) });
+    const onWait = (n: number) => waitLine(n ? waitWords(reader, n) : null);
+    const api = reader === 'account' ? this.tokenApi(id, { onWait }) : new Api({ world: id, key: reader === 'key' ? this.key : null, onWait });
     waitLine = (l) => l && s.line(l, 'wait');
     let meta: OwWorldMeta;
     try {
       meta = await api.world();
     } catch (err) {
-      api.close();
+      this.release(api);
       if (gen !== this.gen) return null;
       const f = asFailure(err);
-      if (f.kind === 'not-found' && !keyed) {
+      if (f.kind === 'ended') return null;
+      if (f.kind === 'not-found' && reader === 'public') {
         this.teardown();
         this.notPublic(id);
         return null;
@@ -256,8 +647,11 @@ export class App {
       s.fail(failureWords(f, 'world'), () => void this.route());
       return null;
     }
+    // The rung: signed in, from the account's list (an account token cannot ask /me); a pasted key
+    // asks /me; the public reads as the public.
     let rung: ReaderRung = 'public';
-    if (keyed) {
+    if (account) rung = rungOf(account);
+    else if (reader === 'key') {
       try {
         const me = await api.me();
         rung = me.role === 'owner' ? 'owner' : 'guest';
@@ -266,9 +660,15 @@ export class App {
       }
     }
     const ws: WorldState = {
-      id, api, store: new WorldStore(), meta, rung, keyed, done: new Set(), pinCounts: null, countsNote: null,
+      id, reader, api, store: new WorldStore(), meta, rung, account, done: new Set(), pinCounts: null, countsNote: null,
       graphs: new GraphCache(), elements: new Map(), onWait: () => {},
     };
+    // The Maps list the home read on the token is handed over: a press from the home reads it once.
+    const held = reader === 'account' ? this.homeMaps.get(id) : undefined;
+    if (held) {
+      ws.store.put('map', held);
+      ws.done.add('maps');
+    }
     waitLine = (l) => ws.onWait(l);
     if (gen !== this.gen) {
       this.world = ws;
@@ -281,12 +681,25 @@ export class App {
 
   private notPublic(id: string): void {
     document.title = 'Not opened · OnlyWorlds mapper';
+    const said = h('p', { class: 'said', role: 'status' });
+    said.hidden = true;
+    const signIn = this.signInButton(said);
     this.page.append(h('section', { class: 'intro' },
       h('h1', {}, 'This world could not be opened'),
-      h('p', { class: 'error', role: 'alert' }, 'No public world has this id. It may be mistyped, or private: paste a key to open it.'),
+      h('p', { class: 'error', role: 'alert' }, this.session
+        ? 'No public world has this id, and it is not one of your worlds. It may be mistyped: paste a key to open it.'
+        : 'No public world has this id. It may be mistyped, or private: paste a key to open it.'),
       h('p', { class: 'mono' }, id),
+      signIn ? h('p', {}, 'If this world is yours or you joined it, sign in to open it as yourself.') : null,
+      signIn, signIn ? said : null,
       this.keyForm(id),
-      h('p', {}, this.link('Back to the start', { world: null, map: null, element: null, type: null, at: null, measure: false }))));
+      h('p', {}, this.link('Back to the start', HOME))));
+  }
+
+  private readerNote(ws: WorldState): HTMLElement | null {
+    if (ws.reader === 'key') return h('p', { class: 'note' }, ws.rung === 'owner' ? 'Read with your key, as the world’s owner.' : 'Read with your key, as this key reads it.');
+    if (ws.reader === 'account' && ws.account) return h('p', { class: 'note' }, ws.account.role === 'owner' ? 'Read with your sign-in, as the world’s owner.' : `Read with your sign-in, as ${roleWords(ws.account)}.`);
+    return null;
   }
 
   /** The Maps (one read), then each Map's Pin count when every Pin of the world fits one read. */
@@ -332,7 +745,7 @@ export class App {
   private worldHeading(ws: WorldState): HTMLElement {
     const name = h('h1', { class: 'world-name' }, ws.meta.name || 'A world with no name');
     try {
-      mountWaymark(name, { world: { id: ws.id, name: ws.meta.name || 'World' }, reader: ws.keyed ? 'member' : 'public', tool: 'mapper', phone: isPhone() });
+      mountWaymark(name, { world: { id: ws.id, name: ws.meta.name || 'World' }, reader: waymarkReader(ws), tool: 'mapper', phone: isPhone() });
     } catch {
       /* the name stands alone */
     }
@@ -354,10 +767,10 @@ export class App {
     const countLine = h('p', { class: 'note' });
     countLine.hidden = true;
     const section = h('section', { class: 'intro wide' },
-      h('p', { class: 'crumb' }, this.link('OnlyWorlds mapper', { world: null, map: null, element: null, type: null, at: null, measure: false })),
+      h('p', { class: 'crumb' }, this.link('OnlyWorlds mapper', HOME)),
       this.worldHeading(ws),
-      ws.keyed ? h('p', { class: 'note' }, ws.rung === 'owner' ? 'Read with your key, as the world’s owner.' : 'Read with your key, as this key reads it.') : null,
-      this.keyNote && ws.keyed ? h('p', { class: 'note' }, this.keyNote) : null,
+      this.readerNote(ws),
+      this.keyNote && ws.reader === 'key' ? h('p', { class: 'note' }, this.keyNote) : null,
       status, countLine, list);
     this.page.append(section);
     ws.onWait = (l) => {
@@ -465,11 +878,17 @@ export class App {
     const type = got.type;
     document.title = `${name} · ${ws.meta.name} · OnlyWorlds mapper`;
     if (!readings.length) {
+      // The element keeps its line, and the world's maps are listed under it, one press into any.
       clear(this.page);
-      this.page.append(h('section', { class: 'intro' },
-        h('p', { class: 'crumb' }, this.link(ws.meta.name || 'The world', { world: ws.id, map: null, element: null, type: null, at: null, measure: false })),
+      const all = homeOrder(maps).map((m) => readMap(m, maps));
+      const list = h('ul', { class: 'rows maps element-maps' });
+      for (const r of all) list.append(this.mapRow(ws, r, { ...HOME, world: ws.id, map: r.id }));
+      this.page.append(h('section', { class: 'intro wide' },
+        h('p', { class: 'crumb' }, this.link(ws.meta.name || 'The world', { ...HOME, world: ws.id })),
         h('h1', {}, name), h('p', { class: 'type' }, typeName(type)),
-        h('p', {}, 'No Pin places this element on any map this reader can see.')));
+        h('p', {}, 'No Pin places this element on any map this reader can see.'),
+        h('p', { class: 'note' }, all.length ? `The world’s ${plural(all.length, 'map')}, one press into any:` : 'This world has no maps this reader can see.'),
+        all.length ? list : null));
       return;
     }
     const open = a.map && readings.some((r) => r.id === a.map) ? a.map : readings[0].id;
@@ -477,7 +896,7 @@ export class App {
     const nameEl = h('strong', { class: 'el-title' }, name);
     if (got.body && type) {
       try {
-        mountWaymark(nameEl, { world: { id: ws.id, name: ws.meta.name }, element: { id, type, name }, reader: ws.keyed ? 'member' : 'public', tool: 'mapper', phone: isPhone() });
+        mountWaymark(nameEl, { world: { id: ws.id, name: ws.meta.name }, element: { id, type, name }, reader: waymarkReader(ws), tool: 'mapper', phone: isPhone() });
       } catch {
         /* the name stands alone */
       }
@@ -523,7 +942,11 @@ export class App {
       if (!ok || gen !== this.gen) return;
       if (ws.store.typeOf(mapId) !== 'map') {
         s.line('This world has no map with this id that this reader can see.', 'error');
-        s.box.append(h('p', {}, this.link('See the world’s maps', { world: ws.id, map: null, element: null, type: null, at: null, measure: false })));
+        const said = h('p', { class: 'said', role: 'status' });
+        said.hidden = true;
+        const signIn = ws.reader === 'public' ? this.signInButton(said) : null;
+        if (signIn) s.box.append(h('p', {}, 'If this world is yours or you joined it, sign in to see its maps as yourself.'), signIn, said);
+        s.box.append(h('p', {}, this.link('See the world’s maps', { ...HOME, world: ws.id })));
         return;
       }
     }
@@ -544,12 +967,12 @@ export class App {
       notes.push(`Drawn over its ground, the map ${ground.name}, placed ${where}: ${what}. The ground's own Pins are not drawn.`);
     }
     if (reading.pictureRefused) notes.push('This map names a picture that is not on a secure (https) address, so it is not drawn.');
-    if (ws.keyed) notes.push('Elements marked hidden are drawn as Pins without links, as the OnlyWorlds graph rules have it.');
+    if (ws.reader !== 'public') notes.push('Elements marked hidden are drawn as Pins without links, as the OnlyWorlds graph rules have it.');
 
     let pictureSize: { w: number; h: number } | null = null;
     const host = {
       world: { id: ws.id, name: ws.meta.name },
-      waymarkReader: (ws.keyed ? 'member' : 'public') as 'member' | 'public',
+      waymarkReader: waymarkReader(ws),
       writer: this.writer,
       measure: a.measure,
       infoOf: (id: string) => this.infoOf(ws, id),

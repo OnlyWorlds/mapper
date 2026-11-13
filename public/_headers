@@ -10,5 +10,23 @@
 /index.html
   Cache-Control: no-cache
 
+# Sign in with OnlyWorlds returns to /signin/callback with a code in the address: never cached,
+# never sent on as a Referer. The host serves the path from the real file signin/callback.html
+# (the mapper's own page); the other two spellings are the host's redirects to it.
+/signin/callback
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  Cache-Control: no-store
+
+/signin/callback/
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  Cache-Control: no-store
+
+/signin/callback.html
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  Cache-Control: no-store
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
