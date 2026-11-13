@@ -222,6 +222,19 @@ for (const [vp, opts] of [
       status = await page.evaluate(() => fetch('/nope').then((r) => r.status));
     }
     check(`${tag} 7 /nope answers 404`, status === 404, `status ${status} by ${how}`);
+    // The callback, on the flown host and before the sign-in client is used: the mapper's own page,
+    // never cached, exactly one Referrer-Policy and it is no-referrer; the 404 page untouched. Read by a
+    // same-origin fetch (redirect: manual), so no code is ever traded. A made-up code and state.
+    if (vp === 'desk') {
+      const cb = await page.evaluate(async () => {
+        const r = await fetch('/signin/callback?code=x&state=y', { redirect: 'manual', cache: 'no-store' });
+        const body = await r.text();
+        return { status: r.status, cache: r.headers.get('cache-control'), referrer: r.headers.get('referrer-policy'), script: /<script type="module"[^>]*src="\/assets\//.test(body), app: body.includes('id="app"') };
+      });
+      check(`${tag} 7 /signin/callback is the mapper's page, no-store, one Referrer-Policy: no-referrer`, cb.status === 200 && cb.script && cb.app && cb.cache === 'no-store' && cb.referrer === 'no-referrer', JSON.stringify(cb));
+      const plain = await page.evaluate(() => fetch('/nothing', { cache: 'no-store' }).then((r) => r.status));
+      check(`${tag} 7 /nothing is still 404`, plain === 404, `status ${plain}`);
+    }
   });
 
   // 8b. A map opened by its address, Back: the list.

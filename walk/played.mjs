@@ -1,13 +1,15 @@
 // The played walk: the built page against a played OnlyWorlds. Every request to the API is answered
 // from the recorded fixtures (walk/record.mjs) or from a small played world made here, none reaches
 // the real server; pictures come from the recording too. At a desk and on a 390 px touch phone
-// (and the element view at 360 by 640 too).
+// (and the element view at 360 by 640 too). Its section `signin` is walk/signin.mjs: Sign in with
+// OnlyWorlds and the home of worlds, played on the registered origin.
 //   npm run build && node walk/played.mjs [chromium|firefox]
 // Screenshots go to .scratch/shots/. Exits 1 on any failed check. MAPPER_DIST serves another build
 // (a control built from an older commit), MAPPER_PORT another port, SECTIONS=9,12 only those.
 import { chromium, firefox } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { serve } from './serve.mjs';
+import { signinWalk } from './signin.mjs';
 import { keyOf, MOPPETOPIA as M, SIKELIA as S, M_MAP, M_SPACE, M_LAYOUT, S_BIG, S_LAYOUT, S_ELEMENT, M_ELEMENT, AT } from './worlds.mjs';
 
 const which = process.argv[2] === 'firefox' ? 'firefox' : 'chromium';
@@ -90,7 +92,11 @@ function check(label, ok, detail = '') {
   if (!ok) fails.push(`${which} ${label}${detail ? `: ${detail}` : ''}`);
 }
 
-const site = await serve(DIST, PORT);
+// Playwright's Firefox touch emulation (a coarse pointer) does not survive the browsing-context-group
+// swap that Cross-Origin-Opener-Policy: same-origin makes, so under the host's own headers the
+// Firefox phone would be a narrow desk. A real phone's pointer is its own: for Firefox only, the
+// walk's server leaves that one header out.
+const site = await serve(DIST, PORT, '127.0.0.1', { drop: which === 'firefox' ? ['Cross-Origin-Opener-Policy'] : [] });
 const browser = await engine.launch().catch((e) => {
   const none = /Executable doesn't exist/.test(String(e?.message));
   console.error(none ? `No ${which} for Playwright here: run "npx playwright install chromium firefox" first.` : String(e?.message ?? e));
@@ -217,6 +223,35 @@ for (const [vp, opts] of [
     await page.click('.open-form button[type=submit]');
     check(`${vp} a malformed id is said`, (await page.textContent('.intro .error')).includes('This is not a world id'));
     await snap('front');
+  });
+
+  // home. The home on an origin that is not the registered one: the demo worlds from the page itself
+  // (nothing read), the ways in without Sign in (its return would land on another origin).
+  await section('home', async () => {
+    const n0 = sent.length;
+    await page.goto(`${site.url}/`);
+    await page.waitForSelector('.demos .world-row');
+    await page.waitForTimeout(300);
+    const names = await page.locator('.demos .world-title-name').allTextContents();
+    check(`${vp} the home shows the three demo worlds as rows of map cards`, names.length === 3 && (await page.locator('.demos .map-card').count()) >= 10, names.join('|'));
+    check(`${vp} the stranger's home reads nothing from OnlyWorlds`, sent.length === n0, sent.slice(n0).join(', '));
+    check(`${vp} Sign in is offered only on the registered origin`, (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 0 && (await page.locator('#world-id').count()) === 1);
+    await snap('home');
+  });
+
+  // callback. The host's rule for the callback, read on the walk's server, which answers as the
+  // host does: the mapper's page at /signin/callback, never cached, no Referer; any other unknown
+  // path the 404 page, never the app.
+  await section('callback', async () => {
+    if (phone) return;
+    const r = await fetch(`${site.url}/signin/callback?code=x&state=y`, { redirect: 'manual' });
+    const body = await r.text();
+    check('the callback path answers 200 with the mapper\'s own page', r.status === 200 && /<script type="module"[^>]*src="\/assets\//.test(body) && body.includes('id="app"'), `${r.status} ${body.slice(0, 80)}`);
+    check('the callback is never cached and sends no Referer', r.headers.get('cache-control') === 'no-store' && r.headers.get('referrer-policy') === 'no-referrer', `${r.headers.get('cache-control')} / ${r.headers.get('referrer-policy')}`);
+    const slash = await fetch(`${site.url}/signin/callback/?code=x&state=y`, { redirect: 'manual' });
+    check('the callback with a slash is the host\'s redirect to it, the query kept', slash.status === 307 && slash.headers.get('location') === '/signin/callback?code=x&state=y', `${slash.status} ${slash.headers.get('location')}`);
+    const nope = await fetch(`${site.url}/nothing`);
+    check('any other unknown path is the 404 page, never the app', nope.status === 404 && (await nope.text()).includes('There is no page at this address'), String(nope.status));
   });
 
   // 2. A world that is not public, or not there: one sentence and the key form.
@@ -736,6 +771,9 @@ for (const [vp, opts] of [
 
   check(`${vp} no console errors`, errors.length === 0, errors.slice(0, 3).join(' | '));
   await ctx.close();
+
+  // signin. Sign in with OnlyWorlds and the home of worlds, on the registered origin (walk/signin.mjs).
+  await section('signin', () => signinWalk({ browser, which, vp, opts, check, dist: DIST, fx }));
 }
 
 clearTimeout(watchdog);

@@ -1,4 +1,4 @@
-// The WebKit walk (the iPhone's engine), played like walk/played.mjs: the picture draws from its
+// The WebKit walk (the iPhone's engine), played like walk/played.mjs: the home at a phone's width, the picture draws from its
 // copies, and a held arrow key stays far under WebKit's limit of 100 history writes in 10 s.
 //   npm run build && npx playwright install webkit && node walk/webkit.mjs
 // Exits 1 on any failed check. MAPPER_DIST serves another build, MAPPER_PORT another port.
@@ -53,7 +53,12 @@ try {
   await page.waitForFunction(() => document.querySelector('.readout')?.dataset.firstDraw !== 'none', null, { timeout: 30_000 }).catch(() => {});
   const status = await page.textContent('.status');
   check('the picture draws from its copies', !status.includes('did not load') && (await page.evaluate(() => document.querySelector('.readout').dataset.firstDraw)) !== 'none', status);
+  // Playwright's screenshot injects an inline stylesheet, which the page's own policy (served now, as
+  // the host serves it) refuses in WebKit: that one refusal, during the screenshot, is the walk's.
+  const before = errors.length;
   await page.screenshot({ path: '.scratch/shots/webkit-map.png' });
+  await page.waitForTimeout(200);
+  for (let i = errors.length - 1; i >= before; i--) if (/Refused to apply a stylesheet/.test(errors[i])) errors.splice(i, 1);
 
   await page.focus('canvas.surface');
   const w0 = await page.evaluate(() => window.__mapper.writes.length);
@@ -66,6 +71,18 @@ try {
   // Then a run of zoom-button presses, each its own gesture: a refused write would be a page error.
   for (let i = 0; i < 60; i++) await page.click(i % 2 ? 'button[aria-label="Zoom out"]' : 'button[aria-label="Zoom in"]');
   await page.waitForTimeout(700);
+  // The home at a phone's width: the rows scroll sideways inside themselves, the page never does,
+  // two and a half cards show, and nothing is read for the demo worlds.
+  await page.setViewportSize({ width: 390, height: 844 });
+  let reads = 0;
+  page.on('request', (r) => r.url().startsWith('https://www.onlyworlds.com/') && reads++);
+  await page.goto(`${site.url}/`);
+  await page.waitForSelector('.demos .world-row');
+  const w = await page.evaluate(() => {
+    const ul = document.querySelectorAll('.demos .cards')[1];
+    return { page: document.scrollingElement.scrollWidth, vw: innerWidth, ul: ul.clientWidth, scroll: ul.scrollWidth, li: ul.querySelector('li').getBoundingClientRect().width };
+  });
+  check('the home on a phone: rows scroll inside, the page never sideways, two and a half cards, nothing read', w.page <= w.vw && w.scroll > w.ul && w.ul / w.li > 2.3 && w.ul / w.li < 2.75 && reads === 0, JSON.stringify({ ...w, reads }));
 } catch (e) {
   check('the walk ran to its end', false, String(e?.message ?? e).split('\n')[0]);
 }
