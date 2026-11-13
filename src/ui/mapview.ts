@@ -35,6 +35,8 @@ export interface MapStatus {
   long: string | null;
   wait: string | null;
   failure: { text: string; retry: () => void } | null;
+  /** The map could not be drawn from what was read (a builder error, not a read's): no Try again. */
+  drawing: string | null;
   notes: string[];
 }
 
@@ -43,6 +45,17 @@ interface Stats {
   firstPictureDrawMs: number | null;
   frames: number[];
   draws: number[];
+}
+
+/** How long a wheel, a key or a button waits with no further step before `at` is written. */
+const IDLE_MS = 300;
+
+function firstItem(s: Scene, ids: ReadonlySet<string>): Item | undefined {
+  for (const id of ids) {
+    const it = s.byId.get(id);
+    if (it) return it;
+  }
+  return undefined;
 }
 
 function p95(list: readonly number[]): number | null {
@@ -90,7 +103,7 @@ export class MapView implements ModeHost {
   private lastMove = 0;
   private lastFrameAt = 0;
   private listOpen = false;
-  private status: MapStatus = { progress: null, long: null, wait: null, failure: null, notes: [] };
+  private status: MapStatus = { progress: null, long: null, wait: null, failure: null, drawing: null, notes: [] };
   private els: {
     title: HTMLElement;
     head: HTMLElement;
@@ -105,6 +118,17 @@ export class MapView implements ModeHost {
     readout: HTMLElement | null;
     lost: HTMLElement;
   };
+  /** Scenes handed to this view: a walk checks that a camera move derives nothing. */
+  sceneCount = 0;
+  /** The element view's centring is done (it waits for the frame, like the fit). */
+  private centred = false;
+  /** On a phone, the element view's card opens as a one-line peek; Details opens the sheet. */
+  peek = false;
+  /**
+   * The selected Pin is kept clear of the overlays until the person moves the camera: a status
+   * line or the element head growing moves the camera again (never written to the address).
+   */
+  private holdClear = false;
   private disposers: (() => void)[] = [];
   private waymarks: (() => void)[] = [];
   readonly stats: Stats = { openedAt: performance.now(), firstPictureDrawMs: null, frames: [], draws: [] };
@@ -126,7 +150,7 @@ export class MapView implements ModeHost {
     this.theme = readTheme(document.documentElement);
 
     const back = button('Back', () => this.host.back(), { class: 'back' });
-    const title = h('h1', { class: 'map-name' }, reading.name);
+    const title = h('h1', { class: 'map-name', title: reading.name }, reading.name);
     const kind = h('span', { class: 'kind' }, reading.words);
     const listBtn = button('List', () => this.toggleList(), { 'aria-expanded': 'false', 'aria-controls': 'panel' });
     const linesBtn = this.linesOn ? null : button('Show links', () => this.toggleLines(), { 'aria-pressed': 'false' });
@@ -154,6 +178,7 @@ export class MapView implements ModeHost {
   // ---- the scene and the camera
 
   setScene(scene: Scene): void {
+    this.sceneCount++;
     this.scene = scene;
     this.renderer.setScene(scene);
     for (const it of scene.items) {
@@ -173,11 +198,18 @@ export class MapView implements ModeHost {
     this.invalidate();
   }
 
+  /**
+   * A Map with no written size and a picture of its own waits for the frame to come from that
+   * picture (or for the picture to fail, or its time limit to pass): never a fit to its points'
+   * extent while a picture is coming. The frame, not the picture's own field, is what is waited on:
+   * the picture knows its size a little before the scene's frame takes it.
+   */
   private waitsForPicture(): boolean {
     const s = this.scene;
     if (!s || s.frame.from === 'written' || s.frame.from === 'picture') return false;
-    const own = this.reading.picture ? this.pictures.get(this.reading.picture) : undefined;
-    return !!own && own.state !== 'failed' && !own.natural;
+    if (!this.reading.picture) return false;
+    const own = this.pictures.get(this.reading.picture);
+    return !own || own.state !== 'failed';
   }
 
   /** The camera fits once, when the frame is known; an `at` from the address wins. */
@@ -209,13 +241,17 @@ export class MapView implements ModeHost {
       this.selection = new Set(ids);
       this.many = [];
       this.clearPending = true;
-      const pin = ids.map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
-      if (pin && !this.at && !this.personMoved && s.frame.from !== 'none') {
-        this.camera = centreOn(s.frame.w, s.frame.h, this.view, pin.x, pin.y);
-        this.settled = true;
-      }
+      this.holdClear = true;
+      this.peek = isPhone();
       this.focusDone = true;
     }
+    if (this.centred || this.at || this.personMoved || s.frame.from === 'none' || this.waitsForPicture()) return;
+    const pin = ids.map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
+    if (!pin) return;
+    this.camera = centreOn(s.frame.w, s.frame.h, this.view, pin.x, pin.y);
+    this.settled = true;
+    this.centred = true;
+    this.clearPending = true;
   }
 
   /** A fit inside what the overlays leave free: below the bar and its status lines. */
@@ -233,6 +269,7 @@ export class MapView implements ModeHost {
     this.lastMove = performance.now();
     this.settled = true;
     this.personMoved = true;
+    this.holdClear = false;
     this.scheduleRest(160);
     this.invalidate();
   }
@@ -243,22 +280,27 @@ export class MapView implements ModeHost {
     this.moved();
   }
 
-  gestureEnded(): void {
-    if (this.camera && this.scene) this.host.writer.gestureEnded(this.reading.id, atOf(this.camera, this.view));
+  /**
+   * The person's camera gesture ended: `at` is written now (a drag's or a pinch's end), or after
+   * `idle` ms with no further step (the wheel, a key held or pressed again, a button pressed again),
+   * so a held key never writes on every repeat.
+   */
+  gestureEnded(idle = 0): void {
+    if (this.camera && this.scene) this.host.writer.gestureEnded(this.reading.id, atOf(this.camera, this.view), idle);
   }
 
   private zoomButton(f: number): void {
     if (!this.camera) return;
     this.camera = zoomAt(this.camera, this.view, this.view.w / 2, this.view.h / 2, f, this.limits());
     this.moved();
-    this.gestureEnded();
+    this.gestureEnded(IDLE_MS);
   }
 
   private fitButton(): void {
     if (!this.scene) return;
     this.camera = this.fitCam(this.scene.frame.w, this.scene.frame.h);
     this.moved();
-    this.gestureEnded();
+    this.gestureEnded(IDLE_MS);
   }
 
   // ---- the pointer
@@ -281,7 +323,9 @@ export class MapView implements ModeHost {
     const ids = this.pickAt(sx, sy, touch, touch);
     this.many = ids.length > 1 ? ids : [];
     this.selection = new Set(ids);
+    this.peek = false;
     this.clearPending = ids.length > 0;
+    this.holdClear = ids.length > 0;
     this.renderCard();
     this.invalidate();
   }
@@ -386,7 +430,7 @@ export class MapView implements ModeHost {
       const [sx, sy] = this.local(e);
       this.camera = zoomAt(this.camera, this.view, sx, sy, Math.exp(-e.deltaY * unit * 0.0015), this.limits());
       this.moved();
-      this.host.writer.gestureEnded(this.reading.id, atOf(this.camera, this.view), 300);
+      this.gestureEnded(IDLE_MS);
     }, { passive: false });
     on(c, 'keydown', (e: KeyboardEvent) => {
       if (!this.camera) return;
@@ -399,7 +443,7 @@ export class MapView implements ModeHost {
         const d = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[k];
         if (!d) return;
         this.pan(d[0], d[1]);
-        this.gestureEnded();
+        this.gestureEnded(IDLE_MS);
       } else if (k === 'Escape') this.clearSelection();
       else return;
       e.preventDefault();
@@ -533,6 +577,7 @@ export class MapView implements ModeHost {
       const f = this.status.failure;
       box.append(h('p', { class: 'failure', role: 'alert' }, f.text + ' ', button('Try again', f.retry, { class: 'retry' })));
     }
+    if (this.status.drawing) box.append(h('p', { class: 'failure drawing', role: 'alert' }, this.status.drawing));
     for (const url of this.pictures.keys()) {
       const pic = this.pictures.get(url)!;
       const whose = this.ground?.picture === url ? "The ground's picture" : 'The picture';
@@ -550,6 +595,12 @@ export class MapView implements ModeHost {
       if (this.reading.depth !== null && s.zMax !== null && s.zMax > this.reading.depth) line(`Some points stand higher than the map's depth of ${this.reading.depth}; they are drawn where written.`);
     }
     for (const n of this.status.notes) line(n, 'note');
+    this.layoutChanged();
+  }
+
+  /** The overlays changed size (a status line, the element head's maps): keep the selection clear. */
+  layoutChanged(): void {
+    if (this.holdClear) this.keepClear();
   }
 
   private retryPicture(url: string): void {
@@ -611,6 +662,8 @@ export class MapView implements ModeHost {
   clearSelection(): void {
     this.selection.clear();
     this.many = [];
+    this.peek = false;
+    this.holdClear = false;
     this.renderCard();
     this.invalidate();
   }
@@ -618,7 +671,9 @@ export class MapView implements ModeHost {
   select(ids: string[], centre = false): void {
     this.selection = new Set(ids);
     this.many = [];
+    this.peek = false;
     this.clearPending = true;
+    this.holdClear = true;
     if (centre && this.scene && this.camera) {
       const it = this.scene.byId.get(ids[0]);
       const at = it?.kind === 'pin' ? [it.x, it.y] : it?.kind === 'zone' ? [(it.bbox[0] + it.bbox[2]) / 2, (it.bbox[1] + it.bbox[3]) / 2] : null;
@@ -686,12 +741,31 @@ export class MapView implements ModeHost {
     const card = this.els.card;
     clear(card);
     const s = this.scene;
+    const peeking = this.peek && !!s && this.selection.size > 0;
+    card.classList.toggle('peek', peeking);
+    this.root.classList.toggle('peeking', peeking);
     if (!s || !this.selection.size) {
       card.hidden = true;
       this.showPanel();
       return;
     }
     card.hidden = false;
+    if (this.peek && this.focus) {
+      const info = this.host.infoOf(this.focus);
+      const first = firstItem(s, this.selection);
+      const type = info.type ?? (first?.kind === 'pin' ? first.elementType : first?.kind === 'zone' ? 'zone' : null);
+      const details = button('Details', () => {
+        this.peek = false;
+        this.clearPending = true;
+        this.renderCard();
+      }, { class: 'details', 'aria-expanded': 'false' });
+      card.append(h('div', { class: 'peek-bar' },
+        h('h2', { class: 'peek-name' }, info.name ?? 'An element this reader cannot see', h('span', { class: 'type' }, ` · ${typeName(type)}`)),
+        details,
+        button('Close', () => this.clearSelection(), { class: 'close' })));
+      this.showPanel();
+      return;
+    }
     card.append(h('div', { class: 'card-bar' }, button('Close', () => this.clearSelection(), { class: 'close' })));
     if (this.many.length > 1) {
       card.append(h('p', { class: 'many' }, `${plural(this.many.length, 'Pin')} under that press:`));

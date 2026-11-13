@@ -1,7 +1,7 @@
 // A Map's picture, drawn from downscaled copies and never from a canvas at its full size. The
-// bytes are read with a time limit of their own; the copies are decoded and resized by
-// `createImageBitmap` (off the main thread in the engines that do it so), smallest first, so the
-// first draw comes early and the sharper copies follow.
+// bytes are read with a time limit of their own; the source is decoded once, by `createImageBitmap`
+// (off the main thread in the engines that do it so), into the largest copy, and the smaller copies
+// are made from that copy, never from the source again: one full decode, one peak of memory.
 export const PICTURE_LIMIT_MS = 45_000;
 /** The largest copy's longer side: a 3D ground texture's default cap, and the flat view's too. */
 export const MAX_SIDE = 4096;
@@ -58,7 +58,7 @@ async function sizeOf(src: string): Promise<{ w: number; h: number; img: HTMLIma
   return { w: img.naturalWidth, h: img.naturalHeight, img };
 }
 
-async function copyOf(source: Blob | HTMLImageElement, w: number, h: number): Promise<ImageBitmap> {
+async function copyOf(source: Blob | HTMLImageElement | ImageBitmap, w: number, h: number): Promise<ImageBitmap> {
   let b: ImageBitmap;
   try {
     b = await createImageBitmap(source, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' });
@@ -117,16 +117,27 @@ export class Picture {
       const size = objectUrl ? await sizeOf(objectUrl) : { w: (source as HTMLImageElement).naturalWidth, h: (source as HTMLImageElement).naturalHeight };
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       this.natural = { w: size.w, h: size.h };
-      for (const side of copySides(size.w, size.h)) {
-        const k = side / Math.max(size.w, size.h);
-        const w = Math.max(1, Math.round(size.w * k));
-        const h = Math.max(1, Math.round(size.h * k));
-        const bitmap = await copyOf(source, w, h);
+      // The size is known: said at once, so a Map with no written size takes its frame now, before
+      // any copy is built.
+      this.onChange();
+      if (this.closed) return;
+      const sizes = copySides(size.w, size.h)
+        .map((side) => {
+          const k = side / Math.max(size.w, size.h);
+          return { w: Math.max(1, Math.round(size.w * k)), h: Math.max(1, Math.round(size.h * k)) };
+        })
+        .reverse();
+      // The largest from the source (the one decode), then each smaller one from the largest.
+      let largest: ImageBitmap | null = null;
+      for (const { w, h } of sizes) {
+        const bitmap = await copyOf(largest ?? source, w, h);
         if (this.closed) {
           bitmap.close();
           return;
         }
+        largest ??= bitmap;
         this.levels.push({ w, h, bitmap });
+        this.levels.sort((a, b) => a.w - b.w);
         if (this.times.firstCopyMs === null) {
           this.times.firstCopyMs = performance.now() - t1;
           this.state = 'ready';

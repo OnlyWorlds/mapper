@@ -29,10 +29,26 @@ class FakeHistory implements HistoryLike {
 class FakeTimers implements Timers {
   queue: { fn: () => void; at: number; id: number }[] = [];
   n = 0;
+  t = 0;
+  now() {
+    return this.t;
+  }
   set(fn: () => void, ms: number) {
     const id = ++this.n;
-    this.queue.push({ fn, at: ms, id });
+    this.queue.push({ fn, at: this.t + ms, id });
     return id;
+  }
+  /** Move the clock on, running what falls due. */
+  advance(ms: number) {
+    const end = this.t + ms;
+    for (;;) {
+      const due = this.queue.filter((q) => q.at <= end).sort((a, b) => a.at - b.at)[0];
+      if (!due) break;
+      this.t = due.at;
+      this.queue = this.queue.filter((q) => q !== due);
+      due.fn();
+    }
+    this.t = end;
   }
   clear(h: unknown) {
     this.queue = this.queue.filter((t) => t.id !== h);
@@ -121,8 +137,39 @@ describe('the address writer', () => {
     expect(h.entries).toHaveLength(1);
     expect(h.url).toBe(el);
     expect(w.shownMap()).toBe(M1);
+    // The write names the Map it shows, so a reload opens the same Map whatever the tab held.
     w.gestureEnded(M1, { x: 9, y: 9, span: 99 });
-    expect(h.url).toBe(`${el}&at=9,9,99`);
+    expect(h.url).toBe(`?world=${W}&type=location&element=${M2}&map=${M1}&at=9,9,99`);
+    expect(parseAddress(h.url).map).toBe(M1);
+  });
+
+  it('meters at writes: a held key or a run of presses never nears an engine limit, and the last camera lands', () => {
+    const { h, w, t } = setup(`?world=${W}&map=${M1}`);
+    let writes = 0;
+    const real = h.replaceState.bind(h);
+    h.replaceState = (s, u, url) => {
+      writes++;
+      real(s, u, url);
+    };
+    // 300 gesture ends, 20 ms apart (a held arrow key's repeat), each with no idle delay: 6 s.
+    for (let i = 0; i < 300; i++) {
+      w.gestureEnded(M1, { x: i, y: 0, span: 100 });
+      t.advance(20);
+    }
+    t.advance(2000);
+    // At most the burst and four a second over the 6 s, and far under WebKit's 100 in 10 s.
+    expect(writes).toBeLessThanOrEqual(10 + 6 * 4 + 2);
+    expect(parseAddress(h.url).at).toEqual({ x: 299, y: 0, span: 100 });
+  });
+
+  it('drops a write the engine refuses, never throws', () => {
+    const { h, w } = setup(`?world=${W}&map=${M1}`);
+    h.replaceState = () => {
+      throw new DOMException('Attempt to use history.replaceState() more than 100 times per 10 seconds', 'SecurityError');
+    };
+    expect(() => w.gestureEnded(M1, { x: 1, y: 2, span: 3 })).not.toThrow();
+    expect(w.log).toHaveLength(0);
+    expect(() => w.markShown(M2)).not.toThrow();
   });
 
   it('never carries at into a pushed entry', () => {

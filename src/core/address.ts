@@ -6,8 +6,12 @@
 //                                       person's own gesture, never for a camera the page moved
 //   &measure=1                          the measure readout
 // A press that writes the address first cancels a pending `at`, and an `at` write checks that the
-// entry it writes still shows the Map whose camera it holds. When `element` and `at` are both
-// present, `at` wins and the element is still marked.
+// entry it writes still shows the Map whose camera it holds; on an entry that shows its Map without
+// naming it (the element view's first Map), the write names it, so a reload opens the same Map.
+// `at` writes are metered (a burst of BURST, then RATE a second: at most 50 in 10 s, where WebKit
+// refuses more than 100 history writes), a write past the meter waits its turn, and a refused write
+// is dropped, never thrown. When `element` and `at` are both present,
+// `at` wins and the element is still marked.
 import type { At } from './camera';
 
 export interface Address {
@@ -76,12 +80,18 @@ export interface HistoryLike {
 export interface Timers {
   set(fn: () => void, ms: number): unknown;
   clear(handle: unknown): void;
+  now(): number;
 }
 
 const realTimers: Timers = {
   set: (fn, ms) => setTimeout(fn, ms),
   clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  now: () => performance.now(),
 };
+
+/** `at` writes the meter lets through at once, and how many a second it gives back. */
+export const BURST = 10;
+export const RATE = 4;
 
 function entry(v: unknown): EntryState | null {
   return v && typeof v === 'object' && (v as EntryState).mapper === 1 ? (v as EntryState) : null;
@@ -89,6 +99,8 @@ function entry(v: unknown): EntryState | null {
 
 export class AddressWriter {
   private pending: { handle: unknown } | null = null;
+  private tokens = BURST;
+  private filledAt: number | null = null;
   /** Each write, for a walk or a test to read. */
   readonly log: { how: 'push' | 'replace'; url: string }[] = [];
 
@@ -136,7 +148,11 @@ export class AddressWriter {
    */
   markShown(map: string | null): void {
     const state: EntryState = { mapper: 1, map, depth: this.depth() };
-    this.hist.replaceState(state, '', formatAddress(this.current()));
+    try {
+      this.hist.replaceState(state, '', formatAddress(this.current()));
+    } catch {
+      /* refused by the engine: the entry keeps its old state */
+    }
   }
 
   /**
@@ -148,12 +164,27 @@ export class AddressWriter {
     const write = () => {
       this.pending = null;
       if (this.shownMap() !== map) return;
-      const url = formatAddress({ ...this.current(), at });
+      const now = this.current();
+      const url = formatAddress({ ...now, map: now.map ?? map, at });
       const state: EntryState = entry(this.hist.state) ?? { mapper: 1, map, depth: 0 };
-      this.hist.replaceState(state, '', url);
+      this.fill();
+      this.tokens = Math.max(0, this.tokens - 1);
+      try {
+        this.hist.replaceState(state, '', url);
+      } catch {
+        return; // refused (an engine's limit): the next gesture's end writes the camera
+      }
       this.log.push({ how: 'replace', url });
     };
-    if (delay <= 0) write();
-    else this.pending = { handle: this.timers.set(write, delay) };
+    this.fill();
+    const wait = Math.max(delay, this.tokens >= 1 ? 0 : ((1 - this.tokens) * 1000) / RATE);
+    if (wait <= 0) write();
+    else this.pending = { handle: this.timers.set(write, wait) };
+  }
+
+  private fill(): void {
+    const now = this.timers.now();
+    if (this.filledAt !== null) this.tokens = Math.min(BURST, this.tokens + ((now - this.filledAt) * RATE) / 1000);
+    this.filledAt = now;
   }
 }

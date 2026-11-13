@@ -51,6 +51,8 @@ export class App {
   private world: WorldState | null = null;
   map: MapView | null = null;
   private page: HTMLElement;
+  /** Aborted when the page is left: its reads in flight stop, its queued reads never start. */
+  private leave = new AbortController();
 
   constructor(root: HTMLElement) {
     this.writer = new AddressWriter(history, () => location.search);
@@ -69,6 +71,8 @@ export class App {
   }
 
   private teardown(): void {
+    this.leave.abort();
+    this.leave = new AbortController();
     this.map?.destroy();
     this.map = null;
     clear(this.page);
@@ -131,14 +135,27 @@ export class App {
     return a;
   }
 
-  /** The key form: a read key, held in this page's memory only (a reload asks again). */
+  /**
+   * The key form: a read key, held in this page's memory only (a reload asks again). Not a password
+   * field in a submitted form, which every browser offers to save: a plain field, masked by CSS
+   * where the engine can, read when its button is pressed.
+   */
   private keyForm(addressWorld: string | null): HTMLElement {
-    const input = h('input', { id: 'world-key', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'ow_r_…' });
+    const input = h('input', { id: 'world-key', type: 'text', class: 'key-input masked', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', placeholder: 'ow_r_…' });
     const msg = h('p', { class: 'error', role: 'alert' });
     msg.hidden = true;
-    const form = h('form', { class: 'key-form' },
-      h('label', { for: 'world-key' }, 'A read key for the world'),
-      h('div', { class: 'field' }, input, h('button', { type: 'submit' }, 'Open with this key')),
+    const masks = typeof CSS !== 'undefined' && CSS.supports?.('-webkit-text-security', 'disc');
+    const show = masks
+      ? button('Show', () => {
+          const masked = input.classList.toggle('masked');
+          show!.textContent = masked ? 'Show' : 'Hide';
+          show!.setAttribute('aria-pressed', String(!masked));
+        }, { class: 'show-key', 'aria-pressed': 'false', 'aria-controls': 'world-key' })
+      : null;
+    const open = h('button', { type: 'button', class: 'open-key' }, 'Open with this key');
+    const form = h('div', { class: 'key-form', role: 'group', 'aria-labelledby': 'world-key-label' },
+      h('label', { for: 'world-key', id: 'world-key-label' }, 'A read key for the world'),
+      h('div', { class: 'field' }, input, show, open),
       h('p', { class: 'hint' }, 'Make a read key on onlyworlds.com, on the world’s page. It starts with ow_r_. The key stays in this page while it is open and is never stored: a reload asks for it again.'),
       msg);
     const say = (text: string, extra?: Node) => {
@@ -147,8 +164,7 @@ export class App {
       if (extra) msg.append(' ', extra);
       msg.hidden = false;
     };
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
+    const submit = async () => {
       const key = input.value.trim();
       const kind = detectKeyKind(key);
       if (kind === 'legacy') return say('Keys of ten digits are not taken here. Make a read key on onlyworlds.com (it starts with ow_r_) and paste that.');
@@ -176,6 +192,12 @@ export class App {
       this.useKey(key, meta.id, kind);
       if (want === meta.id) void this.route();
       else this.go({ world: meta.id, map: null, element: null, type: null, at: null, measure: false });
+    };
+    open.addEventListener('click', () => void submit());
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      void submit();
     });
     return form;
   }
@@ -265,11 +287,11 @@ export class App {
   }
 
   /** The Maps (one read), then each Map's Pin count when every Pin of the world fits one read. */
-  private async ensureMaps(ws: WorldState, say: (l: string | null, fail?: ReadFailure) => void): Promise<boolean> {
+  private async ensureMaps(ws: WorldState, say: (l: string | null, fail?: ReadFailure) => void, signal: AbortSignal): Promise<boolean> {
     if (!ws.done.has('maps')) {
       say('Reading the maps.');
       try {
-        const maps = await ws.api.all('map', undefined);
+        const maps = await ws.api.all('map', undefined, undefined, undefined, signal);
         ws.store.put('map', maps);
         ws.done.add('maps');
       } catch (err) {
@@ -280,7 +302,7 @@ export class App {
     return true;
   }
 
-  private async ensureCounts(ws: WorldState): Promise<void> {
+  private async ensureCounts(ws: WorldState, signal: AbortSignal): Promise<void> {
     if (ws.pinCounts || ws.countsNote) return;
     const total = ws.meta.counts?.types?.pin;
     if (typeof total !== 'number') {
@@ -292,7 +314,7 @@ export class App {
       return;
     }
     if (total > 0 && !ws.done.has('pins')) {
-      const pins = await ws.api.all('pin', undefined);
+      const pins = await ws.api.all('pin', undefined, undefined, undefined, signal);
       ws.store.put('pin', pins);
       ws.done.add('pins');
     }
@@ -322,6 +344,7 @@ export class App {
   }
 
   private async mapsPage(ws: WorldState, gen: number): Promise<void> {
+    const signal = this.leave.signal;
     document.title = `${ws.meta.name} · OnlyWorlds mapper`;
     const status = h('div', { class: 'status-page', 'aria-live': 'polite' });
     const list = h('ul', { class: 'rows maps' });
@@ -352,7 +375,7 @@ export class App {
         clear(status);
         if (fail) status.append(h('p', { class: 'failure', role: 'alert' }, failureWords(fail, 'maps') + ' ', button('Try again', () => void run(), { class: 'retry' })));
         else if (l) status.append(h('p', { class: 'progress' }, l));
-      });
+      }, signal);
       if (!ok || gen !== this.gen) return;
       clear(status);
       const n = ws.store.ofType('map').length;
@@ -363,7 +386,7 @@ export class App {
           countLine.hidden = false;
           countLine.textContent = 'Counting each map’s Pins.';
         }
-        await this.ensureCounts(ws);
+        await this.ensureCounts(ws, signal);
       } catch (err) {
         if (gen !== this.gen) return;
         countLine.hidden = false;
@@ -382,6 +405,7 @@ export class App {
   // ---- one element's maps
 
   private async elementPage(ws: WorldState, a: Address, gen: number): Promise<void> {
+    const signal = this.leave.signal;
     const id = a.element!;
     const s = this.statusPage('Reading the element');
     ws.onWait = (l) => l && s.line(l, 'wait');
@@ -395,7 +419,7 @@ export class App {
         if (a.type) {
           s.line('Reading the element.');
           try {
-            body = (await ws.api.get(a.type, id)) as unknown as Row;
+            body = (await ws.api.get(a.type, id, signal)) as unknown as Row;
           } catch (err) {
             const f = asFailure(err);
             if (f.kind === 'not-found') return s.line('No element with this id that this reader can see in this world.', 'error');
@@ -403,7 +427,7 @@ export class App {
           }
         }
         s.line('Reading the maps it is on.');
-        const pins = await ws.api.all('pin', { element: id }, undefined, ['map']);
+        const pins = await ws.api.all('pin', { element: id }, undefined, ['map'], signal);
         let longWay = false;
         let bodyType: string | null = a.type;
         if (!a.type) {
@@ -412,7 +436,7 @@ export class App {
           if (!t) return s.line('This address has no type, and no Pin this reader can see places this element, so it cannot be read.', 'error');
           bodyType = t;
           try {
-            body = (await ws.api.get(t, id)) as unknown as Row;
+            body = (await ws.api.get(t, id, signal)) as unknown as Row;
           } catch (err) {
             const f = asFailure(err);
             if (f.kind !== 'not-found') throw f;
@@ -429,7 +453,7 @@ export class App {
     if (got.body && got.type) ws.store.put(got.type, [got.body]);
     // The Pins as served carry their Map expanded; the store keeps the Map's id as the link.
     ws.store.put('pin', got.pins.map((p) => ({ ...p, map: linkId(p.map) ?? p.map })));
-    const ok = await this.ensureMaps(ws, (l, f) => (f ? s.fail(failureWords(f, 'maps'), () => void this.route()) : l && s.line(l)));
+    const ok = await this.ensureMaps(ws, (l, f) => (f ? s.fail(failureWords(f, 'maps'), () => void this.route()) : l && s.line(l)), signal);
     if (!ok || gen !== this.gen) return;
     const maps = ws.store.ofType('map');
     const mapIds = [...new Set(got.pins.map((p) => linkId(p.map)).filter((m): m is string => !!m && ws.store.typeOf(m) === 'map'))];
@@ -455,15 +479,25 @@ export class App {
         /* the name stands alone */
       }
     }
-    const others = h('ul', { class: 'chips' });
+    const others = h('ul', { class: 'chips', id: 'element-maps' });
     for (const r of readings) {
       const b = button(r.name, () => this.go({ world: ws.id, type: a.type, element: id, map: r.id, at: null, measure: false }), { class: 'chip', 'aria-current': r.id === open ? 'true' : undefined, title: r.words });
       others.append(h('li', {}, b));
     }
-    const header = h('div', { class: 'element-head' },
-      h('p', {}, nameEl, ` · ${typeName(type)} · on ${plural(readings.length, 'map')}`),
-      others,
-      got.longWay ? h('p', { class: 'note' }, 'The address has no type, so the element was found the long way, through its Pins.') : null);
+    const onMaps = `on ${plural(readings.length, 'map')}`;
+    // On a phone the chips fold behind one button, so the map keeps the screen (rule 10).
+    const header: HTMLElement = h('div', { class: `element-head${readings.length > 1 ? '' : ' single'}` });
+    const fold = readings.length > 1
+      ? button(onMaps, () => {
+          const shown = header.classList.toggle('open');
+          fold?.setAttribute('aria-expanded', String(shown));
+          this.map?.layoutChanged();
+        }, { class: 'maps-fold', 'aria-expanded': 'false', 'aria-controls': 'element-maps' })
+      : null;
+    header.append(
+      h('p', {}, nameEl, ` · ${typeName(type)} · `, h('span', { class: 'on-maps' }, onMaps), fold),
+      others);
+    if (got.longWay) header.append(h('p', { class: 'note' }, 'The address has no type, so the element was found the long way, through its Pins.'));
     await this.mapPage(ws, { ...a, map: open }, gen, id, header);
   }
 
@@ -477,11 +511,12 @@ export class App {
   }
 
   private async mapPage(ws: WorldState, a: Address, gen: number, element: string | null, header: HTMLElement | null): Promise<void> {
+    const signal = this.leave.signal;
     const mapId = a.map!;
     if (!element) {
       const s = this.statusPage('Opening the map');
       ws.onWait = (l) => l && s.line(l, 'wait');
-      const ok = await this.ensureMaps(ws, (l, f) => (f ? s.fail(failureWords(f, 'maps'), () => void this.route()) : l && s.line(l)));
+      const ok = await this.ensureMaps(ws, (l, f) => (f ? s.fail(failureWords(f, 'maps'), () => void this.route()) : l && s.line(l)), signal);
       if (!ok || gen !== this.gen) return;
       if (ws.store.typeOf(mapId) !== 'map') {
         s.line('This world has no map with this id that this reader can see.', 'error');
@@ -536,7 +571,7 @@ export class App {
       { name: 'Zones', state: 'waiting', calls: 0 },
       { name: 'elements', state: 'waiting', calls: 0 },
     ];
-    const status: MapStatus = { progress: null, long: null, wait: null, failure: null, notes };
+    const status: MapStatus = { progress: null, long: null, wait: null, failure: null, drawing: null, notes };
     const push = () => {
       status.progress = progressLine(steps);
       if (gen === this.gen) mv.setStatus({ ...status });
@@ -547,15 +582,26 @@ export class App {
     };
     const markerMaps = [mapId, ...(ground ? [ground.id] : [])];
     let complete = false;
+    // A builder or drawing error is not a read's: it is said as the map's, kept for the console, and
+    // never fails the read that landed (its Try again would only repeat it).
     const derive = () => {
       if (gen !== this.gen) return;
-      const slice = sliceFor(ws.store, mapId, ground?.id ?? null, {
-        markersComplete: markerMaps.every((m) => ws.done.has(`markers@${m}`)),
-        zonesComplete: steps[2].state === 'done',
-      });
-      const scene: Scene = build({ slice, reading, ground, rung: ws.rung, complete, pictureSize, versionOf: (id) => ws.store.version(id) }, ws.graphs);
-      mv.setScene(scene);
-      (window as unknown as { __mapperScene?: Scene }).__mapperScene = scene;
+      try {
+        const slice = sliceFor(ws.store, mapId, ground?.id ?? null, {
+          markersComplete: markerMaps.every((m) => ws.done.has(`markers@${m}`)),
+          zonesComplete: steps[2].state === 'done',
+        });
+        const scene: Scene = build({ slice, reading, ground, rung: ws.rung, complete, pictureSize, versionOf: (id) => ws.store.version(id) }, ws.graphs);
+        mv.setScene(scene);
+        if (status.drawing) {
+          status.drawing = null;
+          push();
+        }
+      } catch (err) {
+        console.error(err);
+        status.drawing = 'This map could not be drawn from what was read.';
+        push();
+      }
     };
 
     const runStep = async (i: number, fn: () => Promise<void>) => {
@@ -590,7 +636,7 @@ export class App {
             steps[0].calls++;
             ws.store.put('pin', rows);
             derive();
-          });
+          }, undefined, signal);
           ws.done.add(`pins@${mapId}`);
         });
         derive();
@@ -600,14 +646,14 @@ export class App {
             await ws.api.all('marker', { map: m }, (rows) => {
               steps[1].calls++;
               ws.store.put('marker', rows);
-            });
+            }, undefined, signal);
             ws.done.add(`markers@${m}`);
           }
         });
         derive();
         await runStep(2, async () => {
           for (const part of chunks(zonesToRead(ws.store, mapId, ground?.id ?? null))) {
-            const got = await ws.api.byIds('zone', part);
+            const got = await ws.api.byIds('zone', part, undefined, signal);
             steps[2].calls++;
             ws.store.put('zone', got);
             const seen = new Set(got.map((r) => r.id));
@@ -619,7 +665,7 @@ export class App {
         await runStep(3, async () => {
           for (const [type, ids] of bodiesToRead(ws.store, mapId)) {
             for (const part of chunks(ids)) {
-              const got = await ws.api.byIds(type, part);
+              const got = await ws.api.byIds(type, part, undefined, signal);
               steps[3].calls++;
               ws.store.put(type, got);
               const seen = new Set(got.map((r) => r.id));
