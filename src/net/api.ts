@@ -2,8 +2,9 @@
 // own time limit (in the client's own fetch, so a walk of pages never shares one) that covers the
 // whole read, its body included, and a 429 waits for the server's reset, says so, and reads again.
 // A read can carry a page's signal: once it aborts, the read in flight stops and no queued read
-// starts. Nothing here writes: the page only ever reads.
-import { OwApiError, OwNetworkError, OwV2Client, type OwElement, type OwMe, type OwWorldMeta } from '@onlyworlds/sdk';
+// starts. Nothing here writes: the page only ever reads. Reads on an account token that answer 401
+// are the sign-in ending, said once by the page, never a world's failure.
+import { OwApiError, OwNetworkError, OwV2Client, type OwAccountWorld, type OwElement, type OwMe, type OwWorldMeta } from '@onlyworlds/sdk';
 import type { Row } from '../core/types';
 
 export const TIME_LIMIT_MS = 30_000;
@@ -19,7 +20,7 @@ class TimeLimitError extends Error {
  * Why a read failed. Only `network` sends a person to check the connection: `unreadable` is an
  * answer that came but could not be read, `page` an error in this page's own code.
  */
-export type FailureKind = 'timeout' | 'network' | 'not-found' | 'refused' | 'server' | 'stopped' | 'unreadable' | 'page';
+export type FailureKind = 'timeout' | 'network' | 'not-found' | 'refused' | 'server' | 'stopped' | 'unreadable' | 'page' | 'ended';
 
 export class ReadFailure extends Error {
   constructor(
@@ -50,6 +51,8 @@ export function failureWords(f: ReadFailure, what: string): string {
       return `OnlyWorlds sent a ${what} answer the mapper could not read.`;
     case 'page':
       return `The ${what} read failed inside this page, not on the way.`;
+    case 'ended':
+      return ENDED_LINE;
   }
 }
 
@@ -77,11 +80,33 @@ export function asFailure(e: unknown): ReadFailure {
 
 const stopped = () => new DOMException('stopped', 'AbortError');
 
+export const ENDED_LINE = 'Your sign-in ended on OnlyWorlds, so the mapper is signed out. Sign in again to go on.';
+
+/**
+ * One request at a time across every reader that shares it: a page that reads several worlds (the
+ * home) reads them one after another, never in a fan-out.
+ */
+export class ReadQueue {
+  private chain: Promise<unknown> = Promise.resolve();
+
+  run<T>(go: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(go, go);
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+}
+
 export interface ApiOptions {
-  /** The world, for a keyless read. */
+  /** The world, for a keyless read or a read on the account token. */
   world: string | null;
   /** A pasted world key, held in this object only. */
   key: string | null;
+  /** The sign-in's account token, read with `world` (or alone, for the account's worlds list). */
+  token?: string | null;
+  /** Called once, on the first 401 a read on the token answers: the sign-in has ended. */
+  onEnded?: () => void;
+  /** A queue shared with other readers; without one, this object keeps its own. */
+  queue?: ReadQueue;
   timeoutMs?: number;
   baseUrl?: string;
   /** Called while a 429 is waited out, with the seconds left (0 when reading again). */
@@ -106,15 +131,19 @@ const sleep = (ms: number, signals: readonly AbortSignal[]) =>
   });
 
 export class Api {
-  readonly client: OwV2Client;
-  private chain: Promise<unknown> = Promise.resolve();
+  /** Never handed out, and a true private field: it holds the key or the token. */
+  readonly #client: OwV2Client;
+  readonly #o: ApiOptions;
+  private readonly queue: ReadQueue;
+  private ended = false;
   private stop = new AbortController();
   /** The signal of the read now running (reads run one at a time), if its caller gave one. */
   private active: AbortSignal | undefined;
   /** Requests sent, 429 retries included. */
   calls = 0;
 
-  constructor(private o: ApiOptions) {
+  constructor(o: ApiOptions) {
+    this.#o = o;
     const base = o.fetch ?? globalThis.fetch.bind(globalThis);
     const limit = o.timeoutMs ?? TIME_LIMIT_MS;
     const timed: typeof fetch = async (input, init) => {
@@ -145,31 +174,48 @@ export class Api {
         const reset = Number(res.headers.get('RateLimit-Reset') ?? res.headers.get('Retry-After') ?? '10');
         let left = Math.min(70, Math.max(1, Number.isFinite(reset) ? Math.ceil(reset) : 10));
         while (left > 0) {
-          this.o.onWait?.(left);
+          this.#o.onWait?.(left);
           await sleep(1000, signals);
           left--;
         }
-        this.o.onWait?.(0);
+        this.#o.onWait?.(0);
       }
     };
-    this.client = o.key
-      ? new OwV2Client({ apiKey: o.key, pageSize: 1000, baseUrl: o.baseUrl ?? BASE_URL, fetch: timed, client: 'mapper' })
-      : new OwV2Client({ world: o.world ?? undefined, pageSize: 1000, baseUrl: o.baseUrl ?? BASE_URL, fetch: timed, client: 'mapper' });
+    const common = { pageSize: 1000, baseUrl: o.baseUrl ?? BASE_URL, fetch: timed, client: 'mapper' };
+    this.#client = o.token
+      ? new OwV2Client({ ...common, apiKey: o.token, world: o.world ?? undefined })
+      : o.key
+        ? new OwV2Client({ ...common, apiKey: o.key })
+        : new OwV2Client({ ...common, world: o.world ?? undefined });
+    this.queue = o.queue ?? new ReadQueue();
+  }
+
+  /** Whether this object reads on the sign-in's token. */
+  get onToken(): boolean {
+    return !!this.#o.token;
   }
 
   /** One request at a time: never a fan-out. A read whose signal aborted before its turn never starts. */
   private run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const go = () => {
-      if (signal?.aborted) return Promise.reject(stopped());
+      if (signal?.aborted || this.stop.signal.aborted) return Promise.reject(stopped());
       this.active = signal;
       return fn().finally(() => {
         this.active = undefined;
       });
     };
-    const next = this.chain.then(go, go);
-    this.chain = next.catch(() => undefined);
-    return next.catch((e) => {
-      throw asFailure(e);
+    return this.queue.run(go).catch((e) => {
+      const f = asFailure(e);
+      // On the token, a 401 is the sign-in ending: said once by the page, and nothing more is read.
+      if (this.#o.token && f.status === 401) {
+        if (!this.ended) {
+          this.ended = true;
+          this.stop.abort();
+          this.#o.onEnded?.();
+        }
+        throw new ReadFailure('ended', 401, 'the sign-in ended');
+      }
+      throw f;
     });
   }
 
@@ -179,15 +225,22 @@ export class Api {
   }
 
   world(signal?: AbortSignal): Promise<OwWorldMeta> {
-    return this.run(() => this.client.getWorld(), signal);
+    return this.run(() => this.#client.getWorld(), signal);
   }
 
+  /** A world key's call: never made on the account token, which keel refuses it. */
   me(signal?: AbortSignal): Promise<OwMe> {
-    return this.run(() => this.client.me(), signal);
+    if (this.#o.token) return Promise.reject(new ReadFailure('page', null, 'me() is a world key call'));
+    return this.run(() => this.#client.me(), signal);
+  }
+
+  /** The account's worlds, owned and joined, in one unpaged answer. On the token only. */
+  accountWorlds(signal?: AbortSignal): Promise<OwAccountWorld[]> {
+    return this.run(() => this.#client.listAccountWorlds(), signal);
   }
 
   get(type: string, id: string, signal?: AbortSignal): Promise<OwElement> {
-    return this.run(() => this.client.get(type, id), signal);
+    return this.run(() => this.#client.get(type, id), signal);
   }
 
   /** Every page of a list, each page its own request, `onPage` after each. */
@@ -196,7 +249,7 @@ export class Api {
     let cursor: string | undefined;
     let page = 0;
     do {
-      const p = await this.run(() => this.client.list(type, { limit: 1000, cursor, filter, expand }), signal);
+      const p = await this.run(() => this.#client.list(type, { limit: 1000, cursor, filter, expand }), signal);
       const got = p.data as unknown as Row[];
       rows.push(...got);
       page++;
@@ -211,7 +264,7 @@ export class Api {
     const out: Row[] = [];
     for (let i = 0; i < ids.length; i += 200) {
       const part = ids.slice(i, i + 200);
-      const p = await this.run(() => this.client.list(type, { ids: part, limit: 1000 }), signal);
+      const p = await this.run(() => this.#client.list(type, { ids: part, limit: 1000 }), signal);
       const got = p.data as unknown as Row[];
       out.push(...got);
       onCall?.(got);

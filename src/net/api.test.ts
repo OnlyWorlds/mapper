@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { Api, asFailure, failureWords, ReadFailure } from './api';
+import { Api, asFailure, failureWords, ReadFailure, ReadQueue } from './api';
 
 const W = '0695db52-5433-7332-8000-db7fe10da375';
+const id2 = '49501a68-179b-4a3c-8eaf-7f46f73d5fd2';
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 
 describe('reads', () => {
@@ -132,6 +133,85 @@ describe('reads', () => {
     } finally {
       console.error = quiet;
     }
+  });
+
+  it('reads a world on the account token with the token as the bearer and the world named', async () => {
+    const sent: { url: string; auth: string | null; key: string | null }[] = [];
+    const fetch = (async (u: unknown, init?: RequestInit) => {
+      const hd = new Headers(init?.headers);
+      sent.push({ url: String(u), auth: hd.get('authorization'), key: hd.get('api-key') });
+      return ok(String(u).includes('/account/worlds') ? { data: [{ id: W, name: 'Moppetopia', role: 'owner', public_read: true, keys: [] }] } : { id: W, name: 'Moppetopia' });
+    }) as typeof globalThis.fetch;
+    const api = new Api({ world: W, key: null, token: 'ow_a_tok', fetch });
+    await api.world();
+    expect(sent[0].url).toContain(`world=${W}`);
+    expect(sent[0].auth).toBe('Bearer ow_a_tok');
+    expect(sent[0].key).toBeNull();
+    const list = new Api({ world: null, key: null, token: 'ow_a_tok', fetch });
+    expect((await list.accountWorlds())[0].role).toBe('owner');
+    // /me is a world key's call: never sent on the token.
+    const err = await api.me().catch((e) => e);
+    expect((err as ReadFailure).kind).toBe('page');
+    expect(sent.some((s) => s.url.includes('/me'))).toBe(false);
+    // The client that holds the token is not on the object's surface.
+    expect(Object.keys(api)).not.toContain('client');
+    expect(Object.keys(api)).not.toContain('o');
+    expect(JSON.stringify(api)).not.toContain('ow_a_tok');
+  });
+
+  it('on the token, the first 401 ends the sign-in once: said as ended, never as refused, and nothing more is read', async () => {
+    let n = 0;
+    const fetch = (async () => {
+      n++;
+      return new Response(JSON.stringify({ error: { code: 'key_revoked', message: 'Revoked.' } }), { status: 401, headers: { 'content-type': 'application/json' } });
+    }) as typeof globalThis.fetch;
+    let ended = 0;
+    const api = new Api({ world: W, key: null, token: 'ow_a_tok', fetch, onEnded: () => ended++ });
+    const all = await Promise.all([api.all('map', undefined), api.world(), api.all('pin', undefined)].map((p) => p.catch((e) => e)));
+    expect((all[0] as ReadFailure).kind).toBe('ended');
+    expect(failureWords(all[0] as ReadFailure, 'maps')).toContain('Your sign-in ended');
+    expect(all.slice(1).every((e) => e instanceof ReadFailure && (e.kind === 'stopped' || e.kind === 'ended'))).toBe(true);
+    expect(ended).toBe(1);
+    expect(n).toBe(1);
+    // Without a token, a 401 stays a refusal of that read.
+    const keyless = new Api({ world: W, key: null, fetch });
+    expect(((await keyless.world().catch((e) => e)) as ReadFailure).kind).toBe('refused');
+  });
+
+  it('readers that share a queue read one at a time between them', async () => {
+    let open = 0;
+    let most = 0;
+    const fetch = (async () => {
+      open++;
+      most = Math.max(most, open);
+      await new Promise((r) => setTimeout(r, 10));
+      open--;
+      return ok({ data: [], has_more: false, next_cursor: null });
+    }) as typeof globalThis.fetch;
+    const queue = new ReadQueue();
+    const a = new Api({ world: W, key: null, token: 'ow_a_tok', fetch, queue });
+    const b = new Api({ world: id2, key: null, token: 'ow_a_tok', fetch, queue });
+    await Promise.all([a.all('map', undefined), b.all('map', undefined), a.all('pin', undefined), b.all('pin', undefined)]);
+    expect(most).toBe(1);
+    // A closed reader's queued reads never start, and the other's still run.
+    let started = 0;
+    const slow = (async () => {
+      started++;
+      await new Promise((r) => setTimeout(r, 20));
+      return ok({ data: [], has_more: false, next_cursor: null });
+    }) as typeof globalThis.fetch;
+    const q2 = new ReadQueue();
+    const c = new Api({ world: W, key: null, fetch: slow, queue: q2 });
+    const d = new Api({ world: id2, key: null, fetch: slow, queue: q2 });
+    const first = c.all('map', undefined);
+    const queued = c.all('pin', undefined).catch((e) => e);
+    const other = d.all('map', undefined);
+    await new Promise((r) => setTimeout(r, 5));
+    c.close();
+    expect(((await queued) as ReadFailure).kind).toBe('stopped');
+    await first.catch(() => undefined);
+    await other;
+    expect(started).toBe(2);
   });
 
   it('says a deleted element (410) as not there', async () => {
