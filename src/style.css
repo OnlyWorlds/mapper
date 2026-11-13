@@ -122,7 +122,7 @@ label { font-weight: 600; font-size: 0.95rem; }
 .mapview.panel-open .zoom { right: calc(min(22rem, 40vw) + 16px); }
 .card-bar { display: flex; justify-content: flex-end; }
 .card[hidden], .maplist[hidden] { display: none; }
-.card + .maplist:not([hidden]) { border-top: 1px solid var(--border); margin-top: 0.6rem; padding-top: 0.4rem; }
+.card:not([hidden]) + .maplist:not([hidden]) { border-top: 1px solid var(--border); margin-top: 0.6rem; padding-top: 0.4rem; }
 .block { margin-bottom: 0.8rem; }
 .block h2 { overflow-wrap: anywhere; }
 .type { color: var(--muted); margin-top: 0; }

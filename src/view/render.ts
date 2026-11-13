@@ -148,8 +148,10 @@ export class Renderer {
     const [fx0, fy0] = screen(0, scene.frame.h);
     ctx.fillStyle = theme.frame;
     ctx.fillRect(fx0, fy0, scene.frame.w * c.s, scene.frame.h * c.s);
+    // The copies are at most twice the screen's pixels, so plain smoothing is enough; only the
+    // part of the copy on screen is drawn.
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingQuality = 'low';
     for (const it of scene.items) {
       if (it.kind !== 'picture' || v.hidden.has('picture')) continue;
       const pic = v.pictures.get(it.url);
@@ -157,8 +159,17 @@ export class Renderer {
       const [x, y, w, h] = it.rect;
       const lvl = levelFor(pic.levels, w * c.s * dpr);
       if (!lvl) continue;
-      const [sx, sy] = screen(x, y + h);
-      ctx.drawImage(lvl.bitmap, sx, sy, w * c.s, h * c.s);
+      const [dx, dy] = screen(x, y + h);
+      const dw = w * c.s;
+      const dh = h * c.s;
+      const vx0 = Math.max(dx, 0);
+      const vy0 = Math.max(dy, 0);
+      const vx1 = Math.min(dx + dw, view.w);
+      const vy1 = Math.min(dy + dh, view.h);
+      if (vx1 <= vx0 || vy1 <= vy0) continue;
+      const kx = lvl.w / dw;
+      const ky = lvl.h / dh;
+      ctx.drawImage(lvl.bitmap, (vx0 - dx) * kx, (vy0 - dy) * ky, (vx1 - vx0) * kx, (vy1 - vy0) * ky, vx0, vy0, vx1 - vx0, vy1 - vy0);
       this.drewPicture = true;
     }
     // The vectors, in the Map's frame under one transform (y up).

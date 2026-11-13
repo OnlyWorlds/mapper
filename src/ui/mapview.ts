@@ -208,6 +208,7 @@ export class MapView implements ModeHost {
     if (!this.focusDone) {
       this.selection = new Set(ids);
       this.many = [];
+      this.clearPending = true;
       const pin = ids.map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
       if (pin && !this.at && !this.personMoved && s.frame.from !== 'none') {
         this.camera = centreOn(s.frame.w, s.frame.h, this.view, pin.x, pin.y);
@@ -280,6 +281,7 @@ export class MapView implements ModeHost {
     const ids = this.pickAt(sx, sy, touch, touch);
     this.many = ids.length > 1 ? ids : [];
     this.selection = new Set(ids);
+    this.clearPending = ids.length > 0;
     this.renderCard();
     this.invalidate();
   }
@@ -313,7 +315,18 @@ export class MapView implements ModeHost {
     };
     const mode = () => this.modes[this.mode];
     on(c, 'pointerdown', (e: PointerEvent) => {
-      c.setPointerCapture?.(e.pointerId);
+      // A primary pointer going down means no other is down: drop any whose end never arrived.
+      if (e.isPrimary && this.pointers.size) {
+        this.pointers.clear();
+        this.pinch = null;
+        this.twoFinger = false;
+        mode().cancel(this);
+      }
+      try {
+        c.setPointerCapture?.(e.pointerId);
+      } catch {
+        /* a pointer the engine does not know: its events still reach the canvas */
+      }
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       this.els.tip.hidden = true;
       if (this.pointers.size === 1) {
@@ -605,6 +618,7 @@ export class MapView implements ModeHost {
   select(ids: string[], centre = false): void {
     this.selection = new Set(ids);
     this.many = [];
+    this.clearPending = true;
     if (centre && this.scene && this.camera) {
       const it = this.scene.byId.get(ids[0]);
       const at = it?.kind === 'pin' ? [it.x, it.y] : it?.kind === 'zone' ? [(it.bbox[0] + it.bbox[2]) / 2, (it.bbox[1] + it.bbox[3]) / 2] : null;
@@ -627,6 +641,43 @@ export class MapView implements ModeHost {
     const open = this.selection.size > 0 || this.listOpen;
     this.els.panel.hidden = !open;
     this.root.classList.toggle('panel-open', open);
+    if (this.clearPending) {
+      this.clearPending = false;
+      this.keepClear();
+    }
+  }
+
+  /** Set when a press or the element view selects: the selected Pin is then kept clear of the card. */
+  private clearPending = false;
+
+  /**
+   * The page moves the camera (never written to the address) so the selected Pin stands in the
+   * part of the map the bar, the status lines and the card or sheet leave free.
+   */
+  private keepClear(): void {
+    const s = this.scene;
+    if (!s || !this.camera) return;
+    const pin = [...this.selection].map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
+    if (!pin) return;
+    const root = this.root.getBoundingClientRect();
+    const top = this.els.head.getBoundingClientRect().bottom - root.top;
+    let right = this.view.w;
+    let bottom = this.view.h;
+    if (!this.els.panel.hidden) {
+      const p = this.els.panel.getBoundingClientRect();
+      if (p.top - root.top > this.view.h * 0.3) bottom = p.top - root.top;
+      else right = p.left - root.left;
+    }
+    if (bottom - top < 60 || right < 60) return;
+    const [sx, sy] = toScreen(this.camera, this.view, pin.x, pin.y);
+    const m = 24;
+    if (sx >= m && sx <= right - m && sy >= top + m && sy <= bottom - m) return;
+    const tx = right / 2;
+    const ty = (top + bottom) / 2;
+    this.camera = { ...this.camera, cx: this.camera.cx + (sx - tx) / this.camera.s, cy: this.camera.cy - (sy - ty) / this.camera.s };
+    this.settled = true;
+    this.scheduleRest(0);
+    this.invalidate();
   }
 
   private renderCard(): void {
@@ -696,8 +747,7 @@ export class MapView implements ModeHost {
       const rows = lines
         .map((l) => {
           const other = l.a === el ? l.b : l.a;
-          const how = [...new Set(l.edges.map((e) => (e.source === el ? fieldLabel(e.field) : `${fieldLabel(e.field)} (theirs)`)))].join(', ');
-          return { other, text: `${this.nameOf(other)}: ${how}` };
+          return { other, text: l.edges.map((e) => this.edgeWords(e)).join('; ') };
         })
         .sort((a, b) => byName(a.text, b.text));
       for (const r of rows) ul.append(h('li', {}, button(r.text, () => this.selectElement(r.other, true))));
@@ -709,11 +759,16 @@ export class MapView implements ModeHost {
     return block;
   }
 
+  /** One link as a sentence: "Drip Plaza names Puddleton as its parent location". */
+  private edgeWords(e: { source: string; field: string; target: string }): string {
+    return `${this.nameOf(e.source)} names ${this.nameOf(e.target)} as its ${fieldLabel(e.field).toLowerCase()}`;
+  }
+
   private lineBlock(l: LineItem): HTMLElement {
     const a = this.nameOf(l.a);
     const b = this.nameOf(l.b);
     const ul = h('ul', { class: 'rows' });
-    for (const e of l.edges) ul.append(h('li', {}, `${this.nameOf(e.source)} · ${fieldLabel(e.field)} · ${this.nameOf(e.target)}`));
+    for (const e of l.edges) ul.append(h('li', {}, this.edgeWords(e)));
     return h('div', { class: 'block' },
       h('h2', {}, `${a} and ${b}`),
       h('p', { class: 'type' }, `A link line (${plural(l.edges.length, 'link')})`),
