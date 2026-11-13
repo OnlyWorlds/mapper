@@ -8,7 +8,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4187",
-    "test": "vitest run"
+    "test": "vitest run",
+    "walk:record": "node walk/record.mjs",
+    "walk:played": "node walk/played.mjs chromium && node walk/played.mjs firefox",
+    "walk:look": "node walk/look.mjs"
   },
   "dependencies": {
     "@onlyworlds/sdk": "4.160.0"
