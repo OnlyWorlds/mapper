@@ -55,7 +55,7 @@ src/app.ts   the pages: the start, a world's maps, an element's maps, a map
 
 ### Walks
 
-The walks drive the built page in Chromium and Firefox, at a desk and on a 390 px touch phone (the element view at 360 by 640 too), and in WebKit, with [Playwright](https://playwright.dev). `npm install` brings Playwright but not its browsers: install those once first.
+The walks drive the built page in Chromium and Firefox, at a desk and on a 390 px touch phone (the element view at 360 by 640 too, a phone turned to 844 by 390, and desk windows of 844 and 900), and in WebKit, with [Playwright](https://playwright.dev). `npm install` brings Playwright but not its browsers: install those once first.
 
 ```sh
 npx playwright install chromium firefox webkit

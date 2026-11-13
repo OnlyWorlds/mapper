@@ -115,7 +115,8 @@ for (const [vp, opts] of [
     const real = window.createImageBitmap;
     window.__decodes = [];
     window.createImageBitmap = function (src, ...rest) {
-      window.__decodes.push(src instanceof Blob ? 'source' : src instanceof HTMLImageElement ? 'source' : 'copy');
+      const o = rest.find((x) => x && typeof x === 'object' && 'resizeWidth' in x);
+      window.__decodes.push({ from: src instanceof Blob || src instanceof HTMLImageElement ? 'source' : 'copy', w: o?.resizeWidth ?? null });
       return real.call(this, src, ...rest);
     };
   });
@@ -223,9 +224,14 @@ for (const [vp, opts] of [
     await page.goto(`${site.url}/?world=${NOPE}`);
     await page.waitForSelector('.key-form');
     check(`${vp} a 404 world says it may be mistyped or private`, (await page.textContent('main')).includes('No public world has this id. It may be mistyped, or private: paste a key to open it.'));
-    // The key field is not a password field in a form, which a browser offers to save.
+    // The key field is a password field (assistive technology reads it masked) outside any form
+    // (no submitted login for a browser to offer to save), with a Show that toggles it.
     const field = await mapper(() => { const i = document.querySelector('#world-key'); return { type: i.type, form: !!i.closest('form'), auto: i.autocomplete }; });
-    check(`${vp} the key field invites no password save`, field.type === 'text' && !field.form && field.auto === 'off', JSON.stringify(field));
+    check(`${vp} the key field is masked to assistive technology and outside any form`, field.type === 'password' && !field.form && field.auto === 'off', JSON.stringify(field));
+    await page.click('.key-form .show-key');
+    const shown = await mapper(() => document.querySelector('#world-key').type);
+    await page.click('.key-form .show-key');
+    check(`${vp} Show shows the key and hides it again`, shown === 'text' && (await mapper(() => document.querySelector('#world-key').type)) === 'password');
     await page.fill('#world-key', '1234567890');
     await page.click('.key-form .open-key');
     check(`${vp} a legacy key is refused`, (await page.textContent('.key-form .error')).includes('Keys of ten digits are not taken here'));
@@ -502,12 +508,26 @@ for (const [vp, opts] of [
     };
     if (phone) {
       await inSight('390x844');
-      // Details opens the sheet, and the Pin is kept clear of it.
-      await page.click('.card .details');
+      // Details opens the sheet, and the Pin is kept clear of it. By the keyboard: the focus follows
+      // into the sheet, and Close gives it back to Details, never to the page.
+      await page.focus('.card .details');
+      await page.keyboard.press('Enter');
       await page.waitForTimeout(300);
+      const into = await mapper(() => ({ inCard: !!document.activeElement?.closest('.card'), tag: document.activeElement?.tagName }));
+      check(`${vp} Details moves the focus into the sheet`, into.inCard, JSON.stringify(into));
       const opened = await mapper(() => window.__mapper.marked.map((id) => { const p = window.__mapper.screenOf(id); const hit = p && document.elementFromPoint(p.x, p.y); return hit?.tagName === 'CANVAS'; }));
       check(`${vp} Details opens the sheet and keeps the marked Pin clear of it`, (await page.locator('.card .block').count()) >= 1 && opened.every(Boolean), JSON.stringify(opened));
       await snap('sikelia-element-details');
+      await page.focus('.card .close');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+      const back = await mapper(() => ({ details: document.activeElement?.classList.contains('details'), peek: window.__mapper.peek, tag: document.activeElement?.tagName }));
+      check(`${vp} Close on the whole card folds it back and gives the focus to Details`, back.details && back.peek, JSON.stringify(back));
+      await page.focus('.card .close');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+      const gone = await mapper(() => ({ canvas: document.activeElement?.classList.contains('surface'), tag: document.activeElement?.tagName, sel: window.__mapper.selection.length }));
+      check(`${vp} Close on the peek ends the selection and gives the focus to the map`, gone.canvas && gone.sel === 0, JSON.stringify(gone));
       await page.setViewportSize({ width: 360, height: 640 });
       await page.goto(`${site.url}/?world=${S}&type=location&element=${S_ELEMENT}`);
       await complete();
@@ -517,6 +537,67 @@ for (const [vp, opts] of [
     } else await inSight('desk');
   });
 
+  // 13 (walked here, before the measure). The widths between a phone and a desk, and a turn: an
+  // open card never covers the bar's controls, and the held Pin stays in sight when the window
+  // changes under it.
+  await section('13', async () => {
+    const controls = () => mapper(() => {
+      const out = { covered: [], outside: [] };
+      for (const el of document.querySelectorAll('.top button, .top a, .card button')) {
+        if (!el.checkVisibility?.()) continue;
+        const scroller = el.closest('.panel, .status, .extra');
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        // A row partly past the edge of its own scrolling box is reached by scrolling it: judged only whole.
+        if (scroller) { const sr = scroller.getBoundingClientRect(); if (r.top < sr.top || r.bottom > sr.bottom) continue; }
+        if (r.left < -1 || r.right > innerWidth + 1 || r.top < -1 || r.bottom > innerHeight + 1) { out.outside.push(el.textContent.trim().slice(0, 24)); continue; }
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 10));
+        if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) out.covered.push(`${el.textContent.trim().slice(0, 24)} under ${hit.className || hit.tagName}`);
+      }
+      return out;
+    });
+    const sight = () => mapper(() => window.__mapper.selection.filter((i) => i.startsWith('pin:')).map((id) => { const p = window.__mapper.screenOf(id); const hit = p && document.elementFromPoint(p.x, p.y); return hit?.tagName === 'CANVAS' ? 'visible' : `covered by ${hit?.className || hit?.tagName || 'nothing'}`; }));
+    const ok = (c, v) => c.covered.length === 0 && c.outside.length === 0 && v.length > 0 && v.every((x) => x === 'visible');
+    const sizes = phone ? [[844, 390]] : [[844, 390], [900, 700]];
+    for (const [w, h] of sizes) {
+      const tag = `${w}x${h}${phone ? ' touch' : ''}`;
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto(`${site.url}/?world=${S}&type=location&element=${S_ELEMENT}`);
+      await complete();
+      await page.waitForTimeout(600);
+      let c = await controls();
+      let v = await sight();
+      check(`${vp} ${tag}: the element view's card covers no control, and its Pin is in sight`, ok(c, v), JSON.stringify({ c, v }));
+      await snap(`width-${w}-element`);
+      await page.goto(`${site.url}/?world=${S}&map=${S_BIG}`);
+      await complete();
+      await page.waitForTimeout(400);
+      const ps = await mapper(() => window.__mapper.pins());
+      const pp = await mapper((id) => window.__mapper.screenOf(id), ps[Math.floor(ps.length / 2)].id);
+      await press(pp.x, pp.y);
+      await page.waitForSelector('.card:not([hidden])');
+      await page.waitForTimeout(400);
+      c = await controls();
+      v = await sight();
+      check(`${vp} ${tag}: a pressed Pin's card covers no control, and the Pin is in sight`, ok(c, v), JSON.stringify({ c, v }));
+      await snap(`width-${w}-card`);
+    }
+    // A turn (a phone) or a narrowed window (a desk), with the element view open and untouched.
+    const [from, to] = phone ? [[390, 844], [844, 390]] : [[1440, 900], [390, 844]];
+    await page.setViewportSize({ width: from[0], height: from[1] });
+    await page.goto(`${site.url}/?world=${S}&type=location&element=${S_ELEMENT}`);
+    await complete();
+    await page.waitForTimeout(600);
+    await page.setViewportSize({ width: to[0], height: to[1] });
+    await page.waitForTimeout(600);
+    const turned = await sight();
+    const peek = await mapper(() => window.__mapper.peek);
+    const wantPeek = to[0] <= 640 || phone;
+    check(`${vp} ${from.join('x')} turned to ${to.join('x')}: the held Pin stays in sight${wantPeek ? ', the card a peek' : ''}`, turned.length > 0 && turned.every((x) => x === 'visible') && (!wantPeek || peek), JSON.stringify({ turned, peek }));
+    await snap('turned');
+    await page.setViewportSize(opts.viewport);
+  });
+
   // 10. The measure readout on Sikelia's largest map: a scripted pan and zoom over the picture.
   await section('10', async () => {
     if (!phone) {
@@ -524,8 +605,12 @@ for (const [vp, opts] of [
       await complete();
       await page.waitForFunction(() => document.querySelector('.readout')?.dataset.firstDraw !== 'none', null, { timeout: 60_000 });
       await page.waitForFunction(() => !document.querySelector('.status')?.textContent.includes('is being'), null, { timeout: 60_000 });
+      // The first draw comes first: the source is decoded into the copy that fits the screen (Sikelia
+      // fitted at a 1440 by 900 desk is about 1,050 px wide), then once more into the largest; the
+      // other copies are made from those, never a third decode.
       const decodes = await mapper(() => window.__decodes);
-      check(`${vp} the picture is decoded once, its smaller copies made from the largest`, decodes.filter((d) => d === 'source').length === 1, JSON.stringify(decodes));
+      const sources = decodes.filter((d) => d.from === 'source');
+      check(`${vp} the picture's first copy is the one that fits the screen, and the source is decoded at most twice`, sources.length >= 1 && sources.length <= 2 && sources[0].w <= 2048 && decodes[0].from === 'source', JSON.stringify(decodes));
       const derives0 = await mapper(() => window.__mapper.derives);
       const b2 = await page.locator('canvas.surface').boundingBox();
       const mx = b2.x + b2.width / 2;
