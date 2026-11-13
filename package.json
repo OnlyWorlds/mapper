@@ -11,6 +11,7 @@
     "test": "vitest run",
     "walk:record": "node walk/record.mjs",
     "walk:played": "node walk/played.mjs chromium && node walk/played.mjs firefox",
+    "walk:webkit": "node walk/webkit.mjs",
     "walk:look": "node walk/look.mjs"
   },
   "dependencies": {
