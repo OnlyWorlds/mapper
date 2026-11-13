@@ -129,6 +129,13 @@ export class MapView implements ModeHost {
    * line or the element head growing moves the camera again (never written to the address).
    */
   private holdClear = false;
+  /**
+   * The element view's own selection, untouched since it opened: a resize decides its card again as
+   * at open (a peek on a phone, the whole card at a desk). A press, Details or a move ends it.
+   */
+  private focusHeld = false;
+  /** The whole card was opened from the peek by Details: its Close folds back to the peek. */
+  private fromPeek = false;
   private disposers: (() => void)[] = [];
   private waymarks: (() => void)[] = [];
   readonly stats: Stats = { openedAt: performance.now(), firstPictureDrawMs: null, frames: [], draws: [] };
@@ -183,7 +190,7 @@ export class MapView implements ModeHost {
     this.renderer.setScene(scene);
     for (const it of scene.items) {
       if (it.kind !== 'picture' || this.pictures.has(it.url)) continue;
-      const pic = new Picture(it.url, () => this.pictureChanged(pic));
+      const pic = new Picture(it.url, () => this.pictureChanged(pic), () => this.pictureWant(it.url));
       this.pictures.set(it.url, pic);
       void pic.load();
     }
@@ -242,6 +249,7 @@ export class MapView implements ModeHost {
       this.many = [];
       this.clearPending = true;
       this.holdClear = true;
+      this.focusHeld = true;
       this.peek = isPhone();
       this.focusDone = true;
     }
@@ -270,6 +278,7 @@ export class MapView implements ModeHost {
     this.settled = true;
     this.personMoved = true;
     this.holdClear = false;
+    this.focusHeld = false;
     this.scheduleRest(160);
     this.invalidate();
   }
@@ -324,6 +333,8 @@ export class MapView implements ModeHost {
     this.many = ids.length > 1 ? ids : [];
     this.selection = new Set(ids);
     this.peek = false;
+    this.focusHeld = false;
+    this.fromPeek = false;
     this.clearPending = ids.length > 0;
     this.holdClear = ids.length > 0;
     this.renderCard();
@@ -488,6 +499,14 @@ export class MapView implements ModeHost {
       this.camera = { ...this.camera, s: (this.camera.s * Math.min(w, hgt)) / Math.min(before.w, before.h) };
     }
     if (!this.camera) this.placeCamera();
+    // A turn or a narrowed window: the element view's untouched card is decided again as at open,
+    // and a held selection is kept clear of what now covers it.
+    if (this.focusHeld && this.selection.size && this.peek !== isPhone()) {
+      this.peek = isPhone();
+      this.clearPending = true;
+      this.renderCard();
+    }
+    this.layoutChanged();
     this.scheduleRest(0);
     this.invalidate();
   }
@@ -541,6 +560,13 @@ export class MapView implements ModeHost {
     const max = Math.min(40, Math.max(8, Math.floor((this.view.w * this.view.h) / 24000)));
     this.labels = placeLabels(cands, (t) => this.renderer.measure(t, this.theme), { w: this.view.w, h: this.view.h, max, font: 12, gap: 8 });
     this.invalidate();
+  }
+
+  /** How many device pixels wide a picture is shown now: at the camera, or across the view before one. */
+  private pictureWant(url: string): number {
+    const it = this.scene?.items.find((i) => i.kind === 'picture' && i.url === url);
+    if (it?.kind === 'picture' && this.camera) return it.rect[2] * this.camera.s * this.dpr;
+    return Math.min(this.view.w, this.view.h) * this.dpr;
   }
 
   private pictureChanged(pic: Picture): void {
@@ -606,7 +632,7 @@ export class MapView implements ModeHost {
   private retryPicture(url: string): void {
     const old = this.pictures.get(url);
     old?.close();
-    const pic = new Picture(url, () => this.pictureChanged(pic));
+    const pic = new Picture(url, () => this.pictureChanged(pic), () => this.pictureWant(url));
     this.pictures.set(url, pic);
     void pic.load();
     this.renderStatus();
@@ -660,18 +686,34 @@ export class MapView implements ModeHost {
   // ---- the card
 
   clearSelection(): void {
+    const hadFocus = this.els.panel.contains(document.activeElement);
     this.selection.clear();
     this.many = [];
     this.peek = false;
     this.holdClear = false;
+    this.focusHeld = false;
+    this.fromPeek = false;
     this.renderCard();
     this.invalidate();
+    // The card is gone: the keyboard's focus goes back to the map, never to the page.
+    if (hadFocus) this.canvas.focus({ preventScroll: true });
+  }
+
+  /** Close on the card: the whole card opened by Details folds back to its peek, else the selection ends. */
+  private closeCard(): void {
+    if (!this.fromPeek) return this.clearSelection();
+    this.fromPeek = false;
+    this.peek = true;
+    this.renderCard();
+    this.els.card.querySelector<HTMLButtonElement>('.details')?.focus({ preventScroll: true });
   }
 
   select(ids: string[], centre = false): void {
     this.selection = new Set(ids);
     this.many = [];
     this.peek = false;
+    this.focusHeld = false;
+    this.fromPeek = false;
     this.clearPending = true;
     this.holdClear = true;
     if (centre && this.scene && this.camera) {
@@ -756,17 +798,23 @@ export class MapView implements ModeHost {
       const type = info.type ?? (first?.kind === 'pin' ? first.elementType : first?.kind === 'zone' ? 'zone' : null);
       const details = button('Details', () => {
         this.peek = false;
+        this.focusHeld = false;
+        this.fromPeek = true;
         this.clearPending = true;
         this.renderCard();
-      }, { class: 'details', 'aria-expanded': 'false' });
+        // The keyboard's focus follows into the sheet, on the element's name.
+        const name = this.els.card.querySelector<HTMLElement>('.block h2');
+        name?.setAttribute('tabindex', '-1');
+        name?.focus({ preventScroll: true });
+      }, { class: 'details' });
       card.append(h('div', { class: 'peek-bar' },
         h('h2', { class: 'peek-name' }, info.name ?? 'An element this reader cannot see', h('span', { class: 'type' }, ` · ${typeName(type)}`)),
         details,
-        button('Close', () => this.clearSelection(), { class: 'close' })));
+        button('Close', () => this.closeCard(), { class: 'close' })));
       this.showPanel();
       return;
     }
-    card.append(h('div', { class: 'card-bar' }, button('Close', () => this.clearSelection(), { class: 'close' })));
+    card.append(h('div', { class: 'card-bar' }, button('Close', () => this.closeCard(), { class: 'close' })));
     if (this.many.length > 1) {
       card.append(h('p', { class: 'many' }, `${plural(this.many.length, 'Pin')} under that press:`));
       const ul = h('ul', { class: 'rows' });

@@ -136,22 +136,24 @@ export class App {
   }
 
   /**
-   * The key form: a read key, held in this page's memory only (a reload asks again). Not a password
-   * field in a submitted form, which every browser offers to save: a plain field, masked by CSS
-   * where the engine can, read when its button is pressed.
+   * The key form: a read key, held in this page's memory only (a reload asks again), read when its
+   * button is pressed and cleared from the field at once.
+   *
+   * A password field, so assistive technology reads it masked: a key spoken aloud, or read by an
+   * accessibility tool, is a leak the person cannot see happen. It stands outside any form and asks
+   * for no autocomplete, which is the answer to the browser's offer to save it: without a submitted
+   * form the offer is rarely made, and a read key a person chose to save is the smaller harm.
    */
   private keyForm(addressWorld: string | null): HTMLElement {
-    const input = h('input', { id: 'world-key', type: 'text', class: 'key-input masked', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', placeholder: 'ow_r_…' });
+    const input = h('input', { id: 'world-key', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', placeholder: 'ow_r_…' });
     const msg = h('p', { class: 'error', role: 'alert' });
     msg.hidden = true;
-    const masks = typeof CSS !== 'undefined' && CSS.supports?.('-webkit-text-security', 'disc');
-    const show = masks
-      ? button('Show', () => {
-          const masked = input.classList.toggle('masked');
-          show!.textContent = masked ? 'Show' : 'Hide';
-          show!.setAttribute('aria-pressed', String(!masked));
-        }, { class: 'show-key', 'aria-pressed': 'false', 'aria-controls': 'world-key' })
-      : null;
+    const show = button('Show', () => {
+      const shown = input.type === 'password';
+      input.type = shown ? 'text' : 'password';
+      show.textContent = shown ? 'Hide' : 'Show';
+      show.setAttribute('aria-pressed', String(shown));
+    }, { class: 'show-key', 'aria-pressed': 'false', 'aria-controls': 'world-key' });
     const open = h('button', { type: 'button', class: 'open-key' }, 'Open with this key');
     const form = h('div', { class: 'key-form', role: 'group', 'aria-labelledby': 'world-key-label' },
       h('label', { for: 'world-key', id: 'world-key-label' }, 'A read key for the world'),
@@ -166,6 +168,8 @@ export class App {
     };
     const submit = async () => {
       const key = input.value.trim();
+      input.value = '';
+      if (input.type !== 'password') show.click();
       const kind = detectKeyKind(key);
       if (kind === 'legacy') return say('Keys of ten digits are not taken here. Make a read key on onlyworlds.com (it starts with ow_r_) and paste that.');
       if (kind === 'account') return say('This is an account token, not a world key. Paste a world’s read key (it starts with ow_r_).');
@@ -188,7 +192,6 @@ export class App {
           this.go({ world: meta.id, map: null, element: null, type: null, at: null, measure: false });
         }));
       }
-      input.value = '';
       this.useKey(key, meta.id, kind);
       if (want === meta.id) void this.route();
       else this.go({ world: meta.id, map: null, element: null, type: null, at: null, measure: false });

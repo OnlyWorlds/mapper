@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { atOf, cameraFromAt, fit, panBy, toMap, toScreen, zoomAt } from './camera';
 import { placeLabels } from './labels';
-import { copySides, levelFor } from '../view/picture';
+import { copyPlan, copySides, levelFor } from '../view/picture';
 import { outLine, progressLine } from './words';
 
 const v = { w: 800, h: 600 };
@@ -74,6 +74,18 @@ describe('the picture copies', () => {
     expect(levelFor(levels, 1500)?.w).toBe(2048);
     expect(levelFor(levels, 9000)?.w).toBe(4096);
     expect(levelFor([], 10)).toBeNull();
+  });
+  it('makes the copy that fits the screen first, then the largest: at most two decodes of the source', () => {
+    const sikelia = [1024, 2048, 4096];
+    // A desk showing Sikelia about 1,050 px wide: the 1024 copy first, then the 4096 from the source, the 2048 from that.
+    expect(copyPlan(sikelia, 8000, 1055)).toEqual([{ index: 0, from: 'source' }, { index: 2, from: 'source' }, { index: 1, from: 2 }]);
+    // A screen that wants 2,000 px: the 2048 first, the 1024 from it, then the 4096.
+    expect(copyPlan(sikelia, 8000, 2000)).toEqual([{ index: 1, from: 'source' }, { index: 0, from: 1 }, { index: 2, from: 'source' }]);
+    // A screen that wants more than any copy: the largest only from the source, one decode.
+    expect(copyPlan(sikelia, 8000, 6000)).toEqual([{ index: 2, from: 'source' }, { index: 1, from: 2 }, { index: 0, from: 2 }]);
+    // A small picture is decoded once, at its largest.
+    expect(copyPlan([1024, 1168], 1168, 500)).toEqual([{ index: 1, from: 'source' }, { index: 0, from: 1 }]);
+    for (const want of [100, 1055, 2000, 3000, 9000]) expect(copyPlan(sikelia, 8000, want).filter((st) => st.from === 'source').length).toBeLessThanOrEqual(2);
   });
 });
 

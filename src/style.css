@@ -88,8 +88,6 @@ p { margin: 0.35rem 0; }
 .mono { font-family: var(--mono); font-size: 0.85rem; overflow-wrap: anywhere; }
 .field { display: flex; gap: 0.5rem; margin: 0.3rem 0; }
 .field input { flex: 1; min-width: 0; padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
-/* The key is masked by CSS, not by a password field a browser offers to save. */
-.key-input.masked { -webkit-text-security: disc; }
 .field { flex-wrap: wrap; }
 label { font-weight: 600; font-size: 0.95rem; }
 .open-form, .key-form { margin: 1rem 0; }
@@ -130,6 +128,10 @@ label { font-weight: 600; font-size: 0.95rem; }
 .zoom button { min-width: 2.4rem; background: var(--overlay); }
 .panel { position: absolute; top: 8px; right: 8px; bottom: 8px; width: min(22rem, 40vw); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12); }
 .mapview.panel-open .zoom { right: calc(min(22rem, 40vw) + 16px); }
+/* A peek is one line: beside the map it is only as tall as that line. */
+.mapview.peeking .panel { bottom: auto; }
+/* The card never covers the bar's controls: beside an open card the top block keeps to the left. */
+.mapview.panel-open .top { right: calc(min(22rem, 40vw) + 16px); }
 .card-bar { display: flex; justify-content: flex-end; }
 .card[hidden], .maplist[hidden] { display: none; }
 .card:not([hidden]) + .maplist:not([hidden]) { border-top: 1px solid var(--border); margin-top: 0.6rem; padding-top: 0.4rem; }
@@ -147,7 +149,9 @@ label { font-weight: 600; font-size: 0.95rem; }
   .top { top: 6px; left: 6px; right: 6px; }
   .bar { padding: 0.25rem 0.35rem; gap: 0.35rem; }
   .map-name { font-size: 0.98rem; }
-  .top { max-height: 45%; }
+  /* On a phone the card is a sheet from the bottom (at most 55% of the height): the top block ends
+     above it, so the sheet never covers the bar either. */
+  .top, .mapview.panel-open .top { right: 6px; max-height: calc(45% - 14px); }
   .extra, .status { max-height: 22vh; font-size: 0.8rem; }
   /* The element view on a phone: one line for the element, its maps behind one button. */
   .element-head .on-maps { display: none; }
@@ -155,6 +159,7 @@ label { font-weight: 600; font-size: 0.95rem; }
   .element-head:not(.open) .chips, .element-head.single .chips { display: none; }
   .panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 55vh; border-radius: 12px 12px 0 0; padding: 0.5rem 16px calc(0.8rem + env(safe-area-inset-bottom)); }
   .mapview.panel-open .zoom { display: none; }
+  .mapview.peeking .panel { bottom: 0; }
   .zoom { bottom: calc(12px + env(safe-area-inset-bottom)); }
   .readout { bottom: auto; top: auto; left: 6px; bottom: 6px; max-width: calc(100% - 70px); font-size: 11px; }
 }

@@ -1,7 +1,9 @@
 // A Map's picture, drawn from downscaled copies and never from a canvas at its full size. The
-// bytes are read with a time limit of their own; the source is decoded once, by `createImageBitmap`
-// (off the main thread in the engines that do it so), into the largest copy, and the smaller copies
-// are made from that copy, never from the source again: one full decode, one peak of memory.
+// bytes are read with a time limit of their own and decoded by `createImageBitmap` (off the main
+// thread in the engines that do it so). The first draw comes first: the source is decoded into the
+// copy that fits the screen, which is drawn at once; the smaller copies are made from that copy;
+// then, when the source holds more, it is decoded once more into the largest copy, and the copies
+// between are made from that. At most two decodes of the source, one after the other, never three.
 export const PICTURE_LIMIT_MS = 45_000;
 /** The largest copy's longer side: a 3D ground texture's default cap, and the flat view's too. */
 export const MAX_SIDE = 4096;
@@ -30,6 +32,38 @@ export function copySides(w: number, h: number, max = MAX_SIDE): number[] {
   for (const s of [1024, 2048, 4096]) if (s < long && s <= max) out.push(s);
   if (long <= max) out.push(long);
   return out.length ? out : [Math.min(long, max)];
+}
+
+/** A copy to make: its size, and what it is made from (the source, or the copy at that index). */
+export interface CopyStep {
+  index: number;
+  from: 'source' | number;
+}
+
+/** Below this longer side the whole picture is cheap to decode and draw: its largest copy comes first. */
+export const SMALL_SIDE = 2048;
+
+/**
+ * The order the copies are made in, for copies of these widths (smallest first) and a screen that
+ * shows the picture `wantPx` device pixels wide: the copy that fits the screen first, from the
+ * source; the smaller ones from it; then the largest from the source, and the ones between from
+ * the largest.
+ */
+export function copyPlan(widths: readonly number[], longSide: number, wantPx: number): CopyStep[] {
+  const last = widths.length - 1;
+  if (last < 0) return [];
+  let first = last;
+  if (longSide > SMALL_SIDE) {
+    first = widths.findIndex((w) => w >= wantPx * 0.9);
+    if (first < 0) first = last;
+  }
+  const steps: CopyStep[] = [{ index: first, from: 'source' }];
+  for (let i = first - 1; i >= 0; i--) steps.push({ index: i, from: first });
+  if (first < last) {
+    steps.push({ index: last, from: 'source' });
+    for (let i = last - 1; i > first; i--) steps.push({ index: i, from: last });
+  }
+  return steps;
 }
 
 /** The copy to draw for a picture shown `needPx` device pixels wide: the smallest that holds it. */
@@ -87,6 +121,8 @@ export class Picture {
   constructor(
     readonly url: string,
     private onChange: () => void,
+    /** How many device pixels wide the screen shows the picture now (asked once its bytes are held). */
+    private wantPx: () => number = () => 1024,
     private limitMs = PICTURE_LIMIT_MS,
   ) {}
 
@@ -121,21 +157,19 @@ export class Picture {
       // any copy is built.
       this.onChange();
       if (this.closed) return;
-      const sizes = copySides(size.w, size.h)
-        .map((side) => {
-          const k = side / Math.max(size.w, size.h);
-          return { w: Math.max(1, Math.round(size.w * k)), h: Math.max(1, Math.round(size.h * k)) };
-        })
-        .reverse();
-      // The largest from the source (the one decode), then each smaller one from the largest.
-      let largest: ImageBitmap | null = null;
-      for (const { w, h } of sizes) {
-        const bitmap = await copyOf(largest ?? source, w, h);
+      const sizes = copySides(size.w, size.h).map((side) => {
+        const k = side / Math.max(size.w, size.h);
+        return { w: Math.max(1, Math.round(size.w * k)), h: Math.max(1, Math.round(size.h * k)) };
+      });
+      const made = new Map<number, ImageBitmap>();
+      for (const step of copyPlan(sizes.map((x) => x.w), Math.max(size.w, size.h), this.wantPx())) {
+        const { w, h } = sizes[step.index];
+        const bitmap = await copyOf(step.from === 'source' ? source : made.get(step.from)!, w, h);
         if (this.closed) {
           bitmap.close();
           return;
         }
-        largest ??= bitmap;
+        made.set(step.index, bitmap);
         this.levels.push({ w, h, bitmap });
         this.levels.sort((a, b) => a.w - b.w);
         if (this.times.firstCopyMs === null) {
