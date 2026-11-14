@@ -578,11 +578,17 @@ for (const [vp, opts] of [
         const i = (Math.round(y * dpr) * png.w + Math.round(x * dpr)) * 4;
         return [png.data[i], png.data[i + 1], png.data[i + 2]];
       };
+      // Its dot's pixels in a 5 by 5 block at its centre: a line or a label standing nearer the camera
+      // may cross the dot (that is 3D), so the read counts the block's pixels in the Pin's colour.
       const want = GROUP_COLORS[buried.style.slice(4)]?.light;
-      const got = at(shot3d, buried.x, buried.y);
       const hex = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
-      const dist = want ? got.reduce((a, v, k) => a + Math.abs(v - hex(want)[k]), 0) : 999;
-      check(`${vp} 3D: a buried Pin is drawn over the ground in its own colour`, dist < 60, `${got} vs ${want}`);
+      let inColour = 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const got = at(shot3d, buried.x + dx, buried.y + dy);
+        if (want && got.reduce((a, v, k) => a + Math.abs(v - hex(want)[k]), 0) < 60) inColour++;
+      }
+      check(`${vp} 3D: a buried Pin is drawn over the ground in its own colour`, inColour >= 5, `${inColour} of 25 pixels in ${want}`);
+      if (inColour < 5) await page.screenshot({ path: `.scratch/shots/played-${which}-${vp}-buried-crop.png`, clip: { x: buried.x - 30, y: buried.y - 30, width: 60, height: 60 } });
       await press(buried.x, buried.y);
       await page.waitForSelector('.card:not([hidden])');
       const sel = await mapper(() => window.__mapper.selection);
