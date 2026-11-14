@@ -188,6 +188,8 @@ export class MapView implements ModeHost {
   private notes3d: string[] = [];
   /** The person moved the 3D camera: a new list or a resize no longer fits it. */
   private moved3d = false;
+  /** The page placed the 3D camera on purpose: no later fit undoes it. */
+  private placed3d = false;
   /** The page is moving the 3D camera (a fit, the element view's centring, keeping the selection clear). */
   private pageMove = false;
   private centred3d = false;
@@ -294,7 +296,10 @@ export class MapView implements ModeHost {
     this.surface = surface;
     this.state3d = 'on';
     this.moved3d = false;
+    this.placed3d = false;
     this.centred3d = false;
+    // A flat gesture's pending `at` dies with the flat view it described.
+    this.host.writer.cancelPending();
     this.line3d = { text: isPhone() ? 'In 3D: one finger turns, two fingers zoom and move.' : 'In 3D: drag to turn, the wheel or two fingers to zoom, right-drag to move.', cls: 'note', retry: null };
     this.root.classList.add('in-3d');
     this.labelBox.hidden = false;
@@ -379,12 +384,25 @@ export class MapView implements ModeHost {
     b.setAttribute('aria-label', flatNext ? 'Draw this map flat' : 'Draw this map in 3D');
   }
 
-  /** The 3D camera fits the frame, until the person moves it. */
+  /**
+   * The 3D camera fits the frame as the list grows, until the person moves it or the page placed it
+   * on purpose (the element view's centring, a List row, keeping the selection clear): a later list
+   * or a resize never undoes a placement, as the flat camera's `settled` holds.
+   */
   private fit3d(): void {
-    if (!this.surface || this.moved3d) return;
+    if (!this.surface || this.moved3d || this.placed3d) return;
     this.pageMove = true;
     this.surface.fit(this.topInset());
     this.pageMove = false;
+  }
+
+  /** The page moves the 3D camera on purpose: never written, and no later fit undoes it. */
+  private place3d(move: (sf: Surface3D) => void): void {
+    if (!this.surface) return;
+    this.pageMove = true;
+    move(this.surface);
+    this.pageMove = false;
+    this.placed3d = true;
   }
 
   /** The element view in 3D: its first Pin at the centre, once, unless the person moved first. */
@@ -393,9 +411,7 @@ export class MapView implements ModeHost {
     if (!this.surface || !s || !this.focus || this.centred3d || this.moved3d) return;
     const pin = (s.byElement.get(this.focus) ?? []).map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
     if (!pin) return;
-    this.pageMove = true;
-    this.surface.centreOn(pin.x, pin.y, pin.z);
-    this.pageMove = false;
+    this.place3d((sf) => sf.centreOn(pin.x, pin.y, pin.z));
     this.centred3d = true;
   }
 
@@ -671,7 +687,7 @@ export class MapView implements ModeHost {
     }
     if (!id) {
       tip.hidden = true;
-      this.canvas.style.cursor = '';
+      (this.surface?.canvas ?? this.canvas).style.cursor = '';
       return;
     }
     tip.textContent = this.itemWords(id);
@@ -679,7 +695,7 @@ export class MapView implements ModeHost {
     const r = this.root.getBoundingClientRect();
     tip.style.left = `${Math.min(e.clientX - r.left + 14, r.width - tip.offsetWidth - 8)}px`;
     tip.style.top = `${Math.max(8, e.clientY - r.top - 34)}px`;
-    this.canvas.style.cursor = 'pointer';
+    (this.surface?.canvas ?? this.canvas).style.cursor = 'pointer';
   }
 
   private listen(): void {
@@ -855,6 +871,8 @@ export class MapView implements ModeHost {
       if (moving) this.stats.draws.push(sf.lastDrawMs);
       this.lastFrameAt = t;
       if (sf.drewPicture && this.stats.firstPictureDrawMs === null) this.stats.firstPictureDrawMs = performance.now() - this.stats.openedAt;
+      if (this.stats.frames.length > 2000) this.stats.frames.splice(0, 1000);
+      if (this.stats.draws.length > 2000) this.stats.draws.splice(0, 1000);
       this.renderReadout();
       return;
     }
@@ -1045,8 +1063,8 @@ export class MapView implements ModeHost {
     this.fromPeek = false;
     this.renderCard();
     this.invalidate();
-    // The card is gone: the keyboard's focus goes back to the map, never to the page.
-    if (hadFocus) this.canvas.focus({ preventScroll: true });
+    // The card is gone: the keyboard's focus goes back to the map drawn, never to the page.
+    if (hadFocus) (this.surface?.canvas ?? this.canvas).focus({ preventScroll: true });
   }
 
   /** Close on the card: the whole card opened by Details folds back to its peek, else the selection ends. */
@@ -1070,9 +1088,7 @@ export class MapView implements ModeHost {
       const it = this.scene.byId.get(ids[0]);
       const at = it?.kind === 'pin' ? [it.x, it.y, it.z] : it?.kind === 'zone' ? [(it.bbox[0] + it.bbox[2]) / 2, (it.bbox[1] + it.bbox[3]) / 2, this.reading.groundZ] : null;
       if (at) {
-        this.pageMove = true;
-        this.surface.centreOn(at[0], at[1], at[2]);
-        this.pageMove = false;
+        this.place3d((sf) => sf.centreOn(at[0], at[1], at[2]));
       }
     } else if (centre && this.scene && this.camera) {
       const it = this.scene.byId.get(ids[0]);
@@ -1131,10 +1147,7 @@ export class MapView implements ModeHost {
       const sf = this.surface;
       const p = sf.project(pin.x, pin.y, pin.z);
       if (p && p[0] >= m && p[0] <= right - m && p[1] >= top + m && p[1] <= bottom - m) return;
-      this.pageMove = true;
-      if (p) sf.nudge(pin.x, pin.y, pin.z, p[0], p[1], tx, ty);
-      else sf.centreOn(pin.x, pin.y, pin.z);
-      this.pageMove = false;
+      this.place3d(() => (p ? sf.nudge(pin.x, pin.y, pin.z, p[0], p[1], tx, ty) : sf.centreOn(pin.x, pin.y, pin.z)));
       return;
     }
     if (!this.camera) return;

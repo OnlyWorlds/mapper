@@ -91,6 +91,8 @@ let checks = 0;
 const fails = [];
 function check(label, ok, detail = '') {
   checks++;
+  // SHOW=1 prints every check with what it measured, passed or not.
+  if (process.env.SHOW) console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${which} ${label}${detail ? `: ${detail}` : ''}`);
   if (!ok) fails.push(`${which} ${label}${detail ? `: ${detail}` : ''}`);
 }
 
@@ -604,7 +606,8 @@ for (const [vp, opts] of [
     }
     // The right way up: the same nine ground points read from straight above in 3D and in the flat
     // view agree in colour.
-    const pic = (await mapper(() => window.__mapper.pictures()))[0];
+    // (Optional-called, so a control build from before the hook still reaches the checks below.)
+    const pic = (await mapper(() => window.__mapper.pictures?.() ?? []))[0];
     if (!phone && pic) {
       await page.focus('canvas.surface-3d');
       for (let i = 0; i < 14; i++) await page.keyboard.press('ArrowUp');
@@ -649,21 +652,36 @@ for (const [vp, opts] of [
       await page.click('button.view-toggle');
     }
     // The element view's chip into the layout: 3D, the element marked and centred (a peek on a phone).
+    // Its reads answer slowly, so the 3D view is on before the list completes and every later list
+    // reaches a camera already placed (with instant answers a fit that undoes the centring never runs).
     await page.goto(`${site.url}/?world=${M}&type=location&element=${M_ELEMENT}`);
     await complete();
+    slowMs = 700;
     await page.click('.element-head .chip:has-text("Moppetopia: layout")').catch(async () => {
       await page.click('.maps-fold');
       await page.click('.element-head .chip:has-text("Moppetopia: layout")');
     });
-    await complete();
     await page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
-    await page.waitForTimeout(300);
+    const onBeforeComplete = !(await mapper(() => window.__mapper.scene?.complete));
+    await complete();
+    slowMs = 0;
+    check(`${vp} the 3D view was on before the list completed (the centring meets later lists)`, onBeforeComplete);
+    await page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
+    // A rest long enough for whatever follows the last read (a resize, a late list) to have moved it.
+    await page.waitForTimeout(1000);
     const marked = await mapper(() => window.__mapper.marked);
     const mpt = marked.length ? await mapper((id) => window.__mapper.screenOf(id), marked[0]) : null;
     const panel = await page.locator('.panel').boundingBox().catch(() => null);
     const bottom = phone && panel ? panel.y : vw.height;
     const right = !phone && panel ? panel.x : vw.width;
     check(`${vp} the element view's chip opens the layout in 3D, marked, in the free part of the map`, marked.length > 0 && mpt && mpt.x > 0 && mpt.x < right && mpt.y > 0 && mpt.y < bottom, `${JSON.stringify(mpt)} right ${right} bottom ${bottom}`);
+    // Centred, and still centred once the whole list has landed (a later fit must not undo it): at the
+    // view's centre, or where keeping it clear of the card moved it (the free part's centre).
+    const box = await page.locator('canvas.surface-3d').boundingBox();
+    const top = (await page.locator('.top').boundingBox()).y + (await page.locator('.top').boundingBox()).height;
+    const centres = [[box.x + box.width / 2, box.y + box.height / 2], [right / 2, (top + bottom) / 2]];
+    const off = mpt ? Math.min(...centres.map(([cx, cy]) => Math.hypot(mpt.x - cx, mpt.y - cy))) : Infinity;
+    check(`${vp} the element view in 3D keeps its Pin centred after the list completes`, off < 30, `${off.toFixed(0)} px off`);
     if (phone) check(`${vp} the element view in 3D opens as a peek on a phone`, (await mapper(() => window.__mapper.peek)) === true);
     await snap('3d-element');
   });
