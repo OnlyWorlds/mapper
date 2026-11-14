@@ -33,10 +33,23 @@ const check = (name, ok, detail = '') => {
 {
   const html = await (await fetch(`${BASE}/`, { signal: AbortSignal.timeout(20_000) })).text();
   const entry = /<script[^>]+src="([^"]+)"/.exec(html)?.[1];
-  const js = entry ? await (await fetch(new URL(entry, BASE), { signal: AbortSignal.timeout(20_000) })).text() : '';
-  const chunk = /assets\/three3d-[\w-]+\.js/.exec(js)?.[0];
-  const three = chunk ? await (await fetch(`${BASE}/${chunk}`, { signal: AbortSignal.timeout(30_000) })).text() : '';
-  check('the first script names the 3D chunk and holds no three.js; the chunk holds it', !!chunk && !js.includes('three.js r1') && three.includes('three.js r1'), `${entry} -> ${chunk}`);
+  // The entry and the chunks it imports statically (the page's first load); one of them names the 3D chunk.
+  const get = async (p) => (await fetch(new URL(p, `${BASE}/assets/`), { signal: AbortSignal.timeout(30_000) })).text();
+  const first = [];
+  const seen = new Set();
+  const queue = entry ? [new URL(entry, BASE).href] : [];
+  while (queue.length) {
+    const u = queue.shift();
+    if (seen.has(u)) continue;
+    seen.add(u);
+    const js = await get(u);
+    first.push(js);
+    for (const m of js.matchAll(/(?:import|from)\s*"\.\/([\w.-]+\.js)"/g)) if (!m[1].startsWith('three3d-')) queue.push(new URL(m[1], `${BASE}/assets/`).href);
+  }
+  const all = first.join('\n');
+  const chunk = /three3d-[\w-]+\.js/.exec(all)?.[0];
+  const three = chunk ? await get(chunk) : '';
+  check('the first load holds no three.js and names the 3D chunk, which holds it', !!chunk && !all.includes('three.js r1') && three.includes('three.js r1'), `${seen.size} scripts -> ${chunk}`);
 }
 
 for (const [vp, opts] of [
@@ -51,9 +64,12 @@ for (const [vp, opts] of [
     await page.goto(`${BASE}/?world=${world}&map=${map}`);
     const on = await page.waitForFunction(() => window.__mapper?.view3d?.state === 'on', null, { timeout: 60_000 }).then(() => true, () => false);
     await page.waitForFunction(() => window.__mapper.scene?.complete, null, { timeout: 120_000 }).catch(() => {});
-    const pic = await page.waitForFunction(() => window.__mapper.view3d?.picture, null, { timeout: 60_000 }).then(() => true, () => false);
+    // A ground with no picture (Blood Meridian's) draws its Zones only, and the page says so.
+    const bare = (await page.textContent('.status')).includes('it has no picture');
+    const pic = bare || (await page.waitForFunction(() => window.__mapper.view3d?.picture, null, { timeout: 60_000 }).then(() => true, () => false));
     await page.waitForTimeout(500);
-    check(`${vp} ${name}: the layout opens in 3D with its ground drawn`, on && pic, JSON.stringify(await page.evaluate(() => window.__mapper.view3d)));
+    const zones = (await page.evaluate(() => window.__mapper.scene?.counts.zones)) ?? 0;
+    check(`${vp} ${name}: the layout opens in 3D with its ground drawn${bare ? ' (Zones only: no picture, said)' : ''}`, on && pic && (!bare || zones > 0), JSON.stringify(await page.evaluate(() => window.__mapper.view3d)));
     // A Pin on the map, clear of the bar and the buttons, pressed.
     const vw = page.viewportSize();
     const pins = await page.evaluate(() => window.__mapper.pins());
