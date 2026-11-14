@@ -313,6 +313,25 @@ else note('the consent page was not shown (an earlier consent covers a read-only
   const rows = Array.isArray(got?.body?.data) ? got.body.data : [];
   const row = rows.find((r) => r?.id === t1?.id);
   check('the account\'s token list marks it read-only', row?.scope === 'world:read', row ? String(row.scope) : 'row not listed');
+  // A write by the read-only token is refused: a key mint on one of the account's worlds. Should keel take
+  // it, the key it made is recorded and revoked by its id at once, on the walk's own token, and the check fails.
+  const worlds = await acct('GET', '/account/worlds').catch(() => null);
+  const wid = (Array.isArray(worlds?.body?.data) ? worlds.body.data : Array.isArray(worlds?.body) ? worlds.body : [])[0]?.id;
+  if (!wid || !t1?.token) note('no world on the account to try a write on: the 403 not read');
+  else {
+    const r = await fetch(`${API}/account/worlds/${encodeURIComponent(wid)}/keys`, {
+      method: 'POST', headers: { ...bearer(t1.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'maps read-only walk: must be refused' }), signal: AbortSignal.timeout(20_000),
+    });
+    const b = await r.json().catch(() => null);
+    const made = b?.id ?? b?.key_id ?? null;
+    if (r.ok && made) {
+      const del = await fetch(`${API}/account/worlds/${encodeURIComponent(wid)}/keys/${encodeURIComponent(made)}`, { method: 'DELETE', headers: bearer(walk.token), signal: AbortSignal.timeout(20_000) });
+      note(`keel took the write: key ${made} revoked by id (${del.status})`);
+    }
+    const said = JSON.stringify(b ?? {});
+    check('a write by the read-only token is refused 403 permission_error', r.status === 403 && said.includes('permission_error'), `${r.status} ${said.slice(0, 160)}`);
+  }
 }
 if (t1?.expiresAt) {
   const hours = (Date.parse(t1.expiresAt) - Date.now()) / 3_600_000;
