@@ -2,7 +2,7 @@
 //   a picture        a plain Map with a picture: flat, its picture, Zones and Pins
 //   a plan           a plain Map without one: flat on a blank frame of its width and height
 //   a layout         a layout map without a depth: flat
-//   a layout · 3D    a layout map with a depth: 3D in a later version, drawn flat in this one
+//   a layout · 3D    a layout map with a depth: 3D, with a Flat button
 // A plain Map with a depth is drawn flat, with one line naming its depth. Whether a Map is a layout
 // map, and its ground, are `layoutOf`'s answer, never read here.
 import { layoutOf } from '@onlyworlds/sdk';
@@ -33,6 +33,10 @@ export interface MapReading {
   groundOffset: [number, number];
   /** True when the offset was read from `settings.margin`. */
   marginRead: boolean;
+  /** The ground's height in 3D: the method's own `settings.ground_z` when whole, else 0. */
+  groundZ: number;
+  /** True when the height was read from `settings.ground_z`. */
+  groundZRead: boolean;
 }
 
 export const KIND_WORDS: Record<MapKind, string> = {
@@ -51,9 +55,11 @@ export function readMap(map: Row, maps: readonly Row[], pins: readonly Row[] = [
   const depth = d !== null && d > 0 ? d : null;
   const kind: MapKind = lo.layout !== null ? (depth !== null ? 'layout3d' : 'layout') : picture ? 'picture' : 'plan';
   let margin: number | null = null;
+  let groundZ: number | null = null;
   if (lo.layout !== null) {
-    const xl = map.x_layout as { settings?: { margin?: unknown } } | undefined;
+    const xl = map.x_layout as { settings?: { margin?: unknown; ground_z?: unknown } } | undefined;
     margin = whole(xl?.settings?.margin);
+    groundZ = whole(xl?.settings?.ground_z);
   }
   return {
     id: map.id,
@@ -69,6 +75,8 @@ export function readMap(map: Row, maps: readonly Row[], pins: readonly Row[] = [
     ground: lo.ground,
     groundOffset: margin !== null ? [margin, margin] : [0, 0],
     marginRead: margin !== null,
+    groundZ: groundZ ?? 0,
+    groundZRead: groundZ !== null,
   };
 }
 

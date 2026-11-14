@@ -1,12 +1,17 @@
-// One Map opened flat. It draws the scene list it is handed and runs the view pass over it: the
-// camera, the selection (a set of item ids), the hover, the lines toggle, the labels placed when the
-// camera rests, the element view's mark. The pointer asks the list (core/hit.ts) and goes through
-// the one-mode table (ui/modes.ts); the camera owns the wheel and two fingers.
+// One Map opened. It draws the scene list it is handed and runs the view pass over it: the camera,
+// the selection (a set of item ids), the hover, the lines toggle, the labels placed when the camera
+// rests, the element view's mark. The pointer asks the list (core/hit.ts) and goes through the
+// one-mode table (ui/modes.ts); the camera owns the wheel and two fingers.
+// A layout map with a depth opens in 3D: a second reader of the same list (view/three3d.ts, loaded
+// on demand, its import racing its own limit), sharing the selection, the hover, the card and the
+// list; the pointer asks the list as projected (core/hit3d.ts). It falls back to the flat draw, with
+// a line saying so, when the import or WebGL fails; Flat and 3D are a press apart.
 import { fieldLabel } from '@onlyworlds/sdk';
 import { mountWaymark } from '@onlyworlds/sdk/waymark';
 import type { AddressWriter } from '../core/address';
 import { atOf, cameraFromAt, centreOn, fit, limitsFor, panBy, toMap, toScreen, zoomAt, type At, type Camera, type View } from '../core/camera';
 import { pick } from '../core/hit';
+import { pick3d } from '../core/hit3d';
 import { linesAlwaysOn, type MapReading } from '../core/kinds';
 import { placeLabels, type Placed } from '../core/labels';
 import { byName } from '../core/rows';
@@ -15,8 +20,9 @@ import type { ElementInfo, Item, ItemKind, LabelItem, LineItem, PinItem, Row, Zo
 import { countsLine, outLine, plural } from '../core/words';
 import { Picture } from '../view/picture';
 import { readTheme, Renderer, type Theme } from '../view/render';
+import type { Surface3D } from '../view/three3d';
 import { button, clear, h, isPhone, typeName } from './dom';
-import { makeModes, type ModeHost, type ModeName } from './modes';
+import { makeModes, SLOP, type ModeHost, type ModeName } from './modes';
 
 export interface MapViewHost {
   world: { id: string; name: string };
@@ -49,6 +55,36 @@ interface Stats {
 
 /** How long a wheel, a key or a button waits with no further step before `at` is written. */
 const IDLE_MS = 300;
+
+/** How long the 3D view's code may take to arrive before the map stays flat and says so. */
+export const IMPORT_LIMIT_MS = 20_000;
+
+type State3D = 'off' | 'loading' | 'on' | 'failed';
+
+const GROUND_REFUSED = "The ground's picture cannot be drawn in 3D (its host does not allow it); Flat draws it.";
+
+/**
+ * The 3D module, imported once per page. A failed import stays failed for the page's life (both
+ * engines keep it in their module map, and after a deploy the old chunk's name is gone anyway), so
+ * Try again under a failed import reloads the page; a limit passed with the import still in flight
+ * waits on that same import again.
+ */
+let module3d: { p: Promise<typeof import('../view/three3d')>; failed: boolean } | null = null;
+
+function load3d(limitMs: number): Promise<typeof import('../view/three3d')> {
+  if (!module3d) {
+    const held: { p: Promise<typeof import('../view/three3d')>; failed: boolean } = { p: import('../view/three3d'), failed: false };
+    held.p.catch(() => {
+      held.failed = true;
+    });
+    module3d = held;
+  }
+  const p = module3d.p;
+  return new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('time limit')), limitMs);
+    p.then((m) => { clearTimeout(t); res(m); }, (e) => { clearTimeout(t); rej(e); });
+  });
+}
 
 function firstItem(s: Scene, ids: ReadonlySet<string>): Item | undefined {
   for (const id of ids) {
@@ -140,19 +176,42 @@ export class MapView implements ModeHost {
   private waymarks: (() => void)[] = [];
   readonly stats: Stats = { openedAt: performance.now(), firstPictureDrawMs: null, frames: [], draws: [] };
 
+  // ---- the 3D view (a layout map with a depth)
+  /** The 3D surface while it is on; null flat. */
+  private surface: Surface3D | null = null;
+  state3d: State3D = 'off';
+  /** Each start of the 3D view takes a ticket; a late import or a start for a view since left draws nothing. */
+  private ticket3d = 0;
+  /** The 3D view's own line: loading, how to move, or why it is flat (with its button). */
+  private line3d: { text: string; cls: string; retry: string | null; how?: 'again' | 'reload' } | null = null;
+  /** Lines only the 3D view says (the ground's picture it cannot draw). */
+  private notes3d: string[] = [];
+  /** The person moved the 3D camera: a new list or a resize no longer fits it. */
+  private moved3d = false;
+  /** The page is moving the 3D camera (a fit, the element view's centring, keeping the selection clear). */
+  private pageMove = false;
+  private centred3d = false;
+  private down3d = new Map<number, { x: number; y: number; far: boolean }>();
+  private multi3d = false;
+  private labelBox: HTMLElement;
+  private viewBtn: HTMLButtonElement | null = null;
+  private destroyed = false;
+  /** How many 3D surfaces this view made, for a walk to read (one context at a time). */
+  surfacesMade = 0;
+
   constructor(
     private host: MapViewHost,
     parent: HTMLElement,
     readonly reading: MapReading,
     readonly ground: MapReading | null,
-    opts: { at: At | null; element: string | null },
+    opts: { at: At | null; element: string | null; flat?: boolean },
   ) {
     this.at = opts.at;
     this.focus = opts.element;
     this.linesOn = linesAlwaysOn(reading.kind);
     if (!this.linesOn) this.hidden.add('line');
 
-    this.canvas = h('canvas', { class: 'surface', tabindex: '0', role: 'img', 'aria-label': `The map ${reading.name}. The List button lists what it places.` });
+    this.canvas = h('canvas', { class: 'surface surface-flat', tabindex: '0', role: 'img', 'aria-label': `The map ${reading.name}. The List button lists what it places.` });
     this.renderer = new Renderer(this.canvas);
     this.theme = readTheme(document.documentElement);
 
@@ -161,9 +220,10 @@ export class MapView implements ModeHost {
     const kind = h('span', { class: 'kind' }, reading.words);
     const listBtn = button('List', () => this.toggleList(), { 'aria-expanded': 'false', 'aria-controls': 'panel' });
     const linesBtn = this.linesOn ? null : button('Show links', () => this.toggleLines(), { 'aria-pressed': 'false' });
+    this.viewBtn = reading.kind === 'layout3d' ? button('Flat', () => this.toggleView(), { class: 'view-toggle' }) : null;
     const extra = h('div', { class: 'extra' });
     const lines = h('div', { class: 'status', 'aria-live': 'polite' });
-    const head = h('div', { class: 'top' }, h('div', { class: 'bar' }, back, h('div', { class: 'titles' }, title, kind), h('div', { class: 'tools' }, listBtn, linesBtn)), extra, lines);
+    const head = h('div', { class: 'top' }, h('div', { class: 'bar' }, back, h('div', { class: 'titles' }, title, kind), h('div', { class: 'tools' }, this.viewBtn, listBtn, linesBtn)), extra, lines);
     const card = h('section', { class: 'card', 'aria-label': 'Selected' });
     const list = h('section', { class: 'maplist', 'aria-label': 'What this map places', hidden: true });
     const panel = h('aside', { class: 'panel', id: 'panel', hidden: true }, card, list);
@@ -174,12 +234,254 @@ export class MapView implements ModeHost {
       button('Fit', () => this.fitButton(), { 'aria-label': 'Fit the map' }));
     const lost = h('div', { class: 'lost', hidden: true }, 'The drawing was lost by the browser. It is drawn again when the browser gives it back.');
     const readout = host.measure ? h('div', { class: 'readout', 'aria-live': 'off' }) : null;
-    this.root = h('div', { class: 'mapview' }, this.canvas, head, zoom, panel, tip, lost, readout);
+    // The 3D view's labels: text nodes over its canvas (the list view is what a screen reader reads).
+    this.labelBox = h('div', { class: 'labels3d', 'aria-hidden': 'true', hidden: true });
+    this.root = h('div', { class: 'mapview' }, this.canvas, this.labelBox, head, zoom, panel, tip, lost, readout);
     this.els = { title, head, extra, lines, linesBtn, listBtn, panel, card, list, tip, readout, lost };
     parent.append(this.root);
     this.listen();
     this.resize();
+    if (reading.kind === 'layout3d' && !opts.flat) void this.start3d();
+    this.syncViewBtn();
     this.renderStatus();
+  }
+
+  // ---- 3D: started, failed, left
+
+  get is3d(): boolean {
+    return this.state3d === 'on' && this.surface !== null;
+  }
+
+  private frame3(): { groundZ: number; depth: number } {
+    return { groundZ: this.reading.groundZ, depth: this.reading.depth ?? 0 };
+  }
+
+  private async start3d(): Promise<void> {
+    const ticket = ++this.ticket3d;
+    this.state3d = 'loading';
+    this.line3d = { text: 'The 3D view is loading; drawn flat until it arrives.', cls: 'progress', retry: null };
+    this.syncViewBtn();
+    this.renderStatus();
+    let mod: typeof import('../view/three3d');
+    try {
+      mod = await load3d(IMPORT_LIMIT_MS);
+    } catch {
+      if (ticket !== this.ticket3d || this.destroyed) return;
+      // A failed import stays failed in this page: only a reload fetches it again. A limit passed
+      // with the import still in flight waits on that same import.
+      if (module3d?.failed) this.fail3d('The 3D view did not load; drawn flat. Try again reloads the page.', 'Try again', 'reload');
+      else this.fail3d('The 3D view is taking too long to load; drawn flat.', 'Try again', 'again');
+      return;
+    }
+    // 3D takes over only when no pointer is down on the flat map (a drag is never cut in two).
+    while (this.pointers.size && ticket === this.ticket3d && !this.destroyed) await new Promise((r) => setTimeout(r, 50));
+    if (ticket !== this.ticket3d || this.destroyed) return;
+    let surface: Surface3D;
+    try {
+      surface = new mod.Surface3D(
+        this.root,
+        `The map ${this.reading.name} in 3D. The List button lists what it places.`,
+        () => ticket === this.ticket3d && this.cameraMoved3d(),
+        () => ticket === this.ticket3d && this.fail3d('The browser took the 3D view away; drawn flat.', 'Try 3D again', 'again'),
+      );
+    } catch (err) {
+      console.error(err);
+      this.fail3d('This browser could not start the 3D view; drawn flat.', 'Try 3D again', 'again');
+      return;
+    }
+    surface.onGroundRefused = () => ticket === this.ticket3d && this.groundRefused();
+    this.surfacesMade++;
+    this.surface = surface;
+    this.state3d = 'on';
+    this.moved3d = false;
+    this.centred3d = false;
+    this.line3d = { text: isPhone() ? 'In 3D: one finger turns, two fingers zoom and move.' : 'In 3D: drag to turn, the wheel or two fingers to zoom, right-drag to move.', cls: 'note', retry: null };
+    this.root.classList.add('in-3d');
+    this.labelBox.hidden = false;
+    const hadFocus = document.activeElement === this.canvas;
+    this.listen3d(surface);
+    surface.resize(this.view, this.dpr);
+    if (this.scene) surface.setScene(this.scene, this.frame3());
+    this.fit3d();
+    this.centre3d();
+    if (hadFocus) surface.canvas.focus({ preventScroll: true });
+    this.syncViewBtn();
+    this.renderStatus();
+    this.clearPending = this.selection.size > 0;
+    this.keepClear();
+    this.scheduleRest(0);
+    this.invalidate();
+  }
+
+  /** The 3D view is let go: its surface disposed, its context lost on purpose. */
+  private stop3d(): void {
+    this.ticket3d++;
+    const hadFocus = !!this.surface && document.activeElement === this.surface.canvas;
+    this.surface?.dispose();
+    this.surface = null;
+    this.down3d.clear();
+    this.notes3d = [];
+    this.root.classList.remove('in-3d');
+    this.labelBox.hidden = true;
+    clear(this.labelBox);
+    if (hadFocus) this.canvas.focus({ preventScroll: true });
+  }
+
+  /** The ground's picture came without CORS: WebGL may not read it, so the plane stays blank and says so. */
+  private groundRefused(): void {
+    if (this.notes3d.includes(GROUND_REFUSED)) return;
+    this.notes3d.push(GROUND_REFUSED);
+    this.renderStatus();
+  }
+
+  /** Drawn flat, with the line saying why and a button: try 3D again in place, or reload the page. */
+  private fail3d(text: string, retry: string, how: 'again' | 'reload'): void {
+    this.stop3d();
+    this.state3d = 'failed';
+    this.line3d = { text, cls: 'failure', retry, how };
+    this.labels = [];
+    this.syncViewBtn();
+    this.renderStatus();
+    this.scheduleRest(0);
+    this.invalidate();
+  }
+
+  /** The bar's Flat or 3D: the same selection, card and list; the address says `view=flat` or not. */
+  private toggleView(): void {
+    if (this.state3d === 'on' || this.state3d === 'loading') {
+      this.stop3d();
+      this.state3d = 'off';
+      this.line3d = null;
+      this.labels = [];
+      this.host.writer.setView(this.reading.id, true);
+      // Flat fits: the address now holds no `at`, so the screen agrees with it.
+      if (this.scene) {
+        this.camera = this.fitCam(this.scene.frame.w, this.scene.frame.h);
+        this.settled = true;
+      }
+      this.syncViewBtn();
+      this.renderStatus();
+      this.clearPending = this.selection.size > 0;
+      this.keepClear();
+      this.scheduleRest(0);
+      this.invalidate();
+    } else {
+      this.host.writer.setView(this.reading.id, false);
+      void this.start3d();
+    }
+  }
+
+  private syncViewBtn(): void {
+    const b = this.viewBtn;
+    if (!b) return;
+    const flatNext = this.state3d === 'on' || this.state3d === 'loading';
+    b.textContent = flatNext ? 'Flat' : '3D';
+    b.setAttribute('aria-label', flatNext ? 'Draw this map flat' : 'Draw this map in 3D');
+  }
+
+  /** The 3D camera fits the frame, until the person moves it. */
+  private fit3d(): void {
+    if (!this.surface || this.moved3d) return;
+    this.pageMove = true;
+    this.surface.fit(this.topInset());
+    this.pageMove = false;
+  }
+
+  /** The element view in 3D: its first Pin at the centre, once, unless the person moved first. */
+  private centre3d(): void {
+    const s = this.scene;
+    if (!this.surface || !s || !this.focus || this.centred3d || this.moved3d) return;
+    const pin = (s.byElement.get(this.focus) ?? []).map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
+    if (!pin) return;
+    this.pageMove = true;
+    this.surface.centreOn(pin.x, pin.y, pin.z);
+    this.pageMove = false;
+    this.centred3d = true;
+  }
+
+  /** The 3D camera moved: by the person (labels wait for it to rest), or by the page. */
+  private cameraMoved3d(): void {
+    if (this.pageMove) {
+      this.scheduleRest(0);
+      this.invalidate();
+      return;
+    }
+    this.moved3d = true;
+    this.lastMove = performance.now();
+    this.holdClear = false;
+    this.focusHeld = false;
+    if (this.labels.length) {
+      this.labels = [];
+      this.renderLabels3d();
+    }
+    this.scheduleRest(160);
+    this.invalidate();
+  }
+
+  private listen3d(surface: Surface3D): void {
+    const c = surface.canvas;
+    const on = <K extends keyof HTMLElementEventMap>(type: K, fn: (e: HTMLElementEventMap[K]) => void) => c.addEventListener(type, fn);
+    on('pointerdown', (e) => {
+      this.els.tip.hidden = true;
+      if (e.isPrimary) {
+        this.down3d.clear();
+        this.multi3d = false;
+      }
+      this.down3d.set(e.pointerId, { x: e.clientX, y: e.clientY, far: false });
+      if (this.down3d.size > 1) this.multi3d = true;
+    });
+    on('pointermove', (e) => {
+      const d = this.down3d.get(e.pointerId);
+      if (d) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > SLOP) d.far = true;
+      } else if (e.pointerType === 'mouse' && e.buttons === 0) this.hoverAt(e);
+    });
+    const end = (e: PointerEvent) => {
+      const d = this.down3d.get(e.pointerId);
+      if (!d) return;
+      this.down3d.delete(e.pointerId);
+      // A press is one pointer that went down and up in place; a turn, a pinch or a cancel selects nothing.
+      if (e.type === 'pointerup' && !d.far && !this.multi3d && e.button === 0) this.press(e.clientX, e.clientY, e.pointerType !== 'mouse');
+      if (!this.down3d.size) this.multi3d = false;
+    };
+    on('pointerup', end);
+    on('pointercancel', end);
+    on('pointerleave', (e) => {
+      if (e.pointerType === 'mouse' && this.hover) {
+        this.hover = null;
+        this.els.tip.hidden = true;
+        this.invalidate();
+      }
+    });
+    on('keydown', (e) => {
+      const k = e.key;
+      const step = 0.12;
+      if (k === '+' || k === '=') this.zoomButton(1.4);
+      else if (k === '-' || k === '_') this.zoomButton(1 / 1.4);
+      else if (k === '0') this.fitButton();
+      else if (k === 'ArrowLeft') surface.turn(-step, 0);
+      else if (k === 'ArrowRight') surface.turn(step, 0);
+      else if (k === 'ArrowUp') surface.turn(0, -step);
+      else if (k === 'ArrowDown') surface.turn(0, step);
+      else if (k === 'Escape') this.clearSelection();
+      else return;
+      e.preventDefault();
+    });
+  }
+
+  /** The 3D view's placed labels, as text beside their anchors' projected points. */
+  private renderLabels3d(): void {
+    const box = this.labelBox;
+    clear(box);
+    const s = this.scene;
+    if (!this.is3d || !s || this.hidden.has('label')) return;
+    for (const l of this.labels) {
+      const on = this.hover === l.anchor || this.selection.has(l.anchor);
+      const span = h('span', { class: `label3d ${l.side}${on ? ' on' : ''}` }, l.text);
+      span.style.left = `${l.rect[0] + 3}px`;
+      span.style.top = `${(l.rect[1] + l.rect[3]) / 2}px`;
+      box.append(span);
+    }
   }
 
   // ---- the scene and the camera
@@ -188,6 +490,10 @@ export class MapView implements ModeHost {
     this.sceneCount++;
     this.scene = scene;
     this.renderer.setScene(scene);
+    if (this.surface) {
+      this.surface.setScene(scene, this.frame3());
+      this.fit3d();
+    }
     for (const it of scene.items) {
       if (it.kind !== 'picture' || this.pictures.has(it.url)) continue;
       const pic = new Picture(it.url, () => this.pictureChanged(pic), () => this.pictureWant(it.url));
@@ -198,6 +504,7 @@ export class MapView implements ModeHost {
     for (const id of [...this.selection]) if (!scene.byId.has(id)) this.selection.delete(id);
     this.placeCamera();
     this.applyFocus();
+    this.centre3d();
     if (this.listOpen) this.renderList();
     this.renderCard();
     this.scheduleRest(0);
@@ -262,10 +569,14 @@ export class MapView implements ModeHost {
     this.clearPending = true;
   }
 
+  /** How far down the bar and its status lines reach, in CSS pixels from the map's top. */
+  private topInset(): number {
+    return Math.max(0, this.els.head.getBoundingClientRect().bottom - this.root.getBoundingClientRect().top + 4);
+  }
+
   /** A fit inside what the overlays leave free: below the bar and its status lines. */
   private fitCam(w: number, hgt: number): Camera {
-    const top = Math.max(0, this.els.head.getBoundingClientRect().bottom - this.root.getBoundingClientRect().top + 4);
-    return fit(w, hgt, this.view, 0.94, { top, right: 0, bottom: 0, left: 0 });
+    return fit(w, hgt, this.view, 0.94, { top: this.topInset(), right: 0, bottom: 0, left: 0 });
   }
 
   private limits(): [number, number] {
@@ -299,6 +610,8 @@ export class MapView implements ModeHost {
   }
 
   private zoomButton(f: number): void {
+    // In 3D the camera is the person's own and never written to the address.
+    if (this.surface && this.is3d) return this.surface.dolly(f);
     if (!this.camera) return;
     this.camera = zoomAt(this.camera, this.view, this.view.w / 2, this.view.h / 2, f, this.limits());
     this.moved();
@@ -306,6 +619,10 @@ export class MapView implements ModeHost {
   }
 
   private fitButton(): void {
+    if (this.surface && this.is3d) {
+      this.surface.fit(this.topInset());
+      return;
+    }
     if (!this.scene) return;
     this.camera = this.fitCam(this.scene.frame.w, this.scene.frame.h);
     this.moved();
@@ -315,12 +632,15 @@ export class MapView implements ModeHost {
   // ---- the pointer
 
   private local(e: { clientX: number; clientY: number }): [number, number] {
-    const r = this.canvas.getBoundingClientRect();
+    const r = (this.surface?.canvas ?? this.canvas).getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
   }
 
   private pickAt(sx: number, sy: number, touch: boolean, many: boolean): string[] {
     const s = this.scene;
+    if (s && this.surface && this.is3d) {
+      return pick3d(s.items, s.grid, this.surface, { sx, sy, r: touch ? 14 : 8, hidden: this.hidden, labels: this.labels, many, zoneZ: this.reading.groundZ });
+    }
     if (!s || !this.camera) return [];
     const [x, y] = toMap(this.camera, this.view, sx, sy);
     const r = (touch ? 14 : 8) / this.camera.s;
@@ -492,6 +812,10 @@ export class MapView implements ModeHost {
     this.view = { w, h: hgt };
     this.dpr = window.devicePixelRatio || 1;
     this.renderer.resize(this.view, this.dpr);
+    if (this.surface) {
+      this.surface.resize(this.view, this.dpr);
+      this.fit3d();
+    }
     if (this.camera && this.scene && !this.personMoved && !this.at && !this.focus) {
       this.camera = this.fitCam(this.scene.frame.w, this.scene.frame.h);
     } else if (this.camera && before.w > 1) {
@@ -522,6 +846,18 @@ export class MapView implements ModeHost {
   }
 
   private draw(t: number): void {
+    if (this.surface && this.is3d) {
+      const sf = this.surface;
+      sf.render({ selection: this.selection, hover: this.hover, marked: this.marked, hidden: this.hidden, pictures: this.pictures, theme: this.theme });
+      this.renderLabels3d();
+      const moving = t - this.lastMove < 200 || this.down3d.size > 0;
+      if (moving && this.lastFrameAt && t - this.lastFrameAt < 1000) this.stats.frames.push(t - this.lastFrameAt);
+      if (moving) this.stats.draws.push(sf.lastDrawMs);
+      this.lastFrameAt = t;
+      if (sf.drewPicture && this.stats.firstPictureDrawMs === null) this.stats.firstPictureDrawMs = performance.now() - this.stats.openedAt;
+      this.renderReadout();
+      return;
+    }
     if (!this.camera) {
       this.renderer.draw({ camera: { cx: 0, cy: 0, s: 1 }, view: this.view, dpr: this.dpr, selection: this.selection, hover: null, marked: this.marked, hidden: this.hidden, labels: [], pictures: this.pictures, theme: this.theme });
       return;
@@ -545,8 +881,10 @@ export class MapView implements ModeHost {
 
   private placeLabelsNow(): void {
     const s = this.scene;
-    if (!s || !this.camera || !s.complete) {
+    const sf = this.is3d ? this.surface : null;
+    if (!s || (!this.camera && !sf) || !s.complete) {
       this.labels = [];
+      this.renderLabels3d();
       return;
     }
     const cands = [];
@@ -554,7 +892,12 @@ export class MapView implements ModeHost {
       if (it.kind !== 'label') continue;
       const a = s.byId.get((it as LabelItem).anchor) as PinItem | undefined;
       if (!a) continue;
-      const [sx, sy] = toScreen(this.camera, this.view, a.x, a.y);
+      let sx: number, sy: number;
+      if (sf) {
+        const p = sf.project(a.x, a.y, a.z);
+        if (!p) continue; // behind the camera: no label
+        [sx, sy] = p;
+      } else [sx, sy] = toScreen(this.camera!, this.view, a.x, a.y);
       cands.push({ anchor: a.id, text: (it as LabelItem).text, sx, sy });
     }
     const max = Math.min(40, Math.max(8, Math.floor((this.view.w * this.view.h) / 24000)));
@@ -596,6 +939,12 @@ export class MapView implements ModeHost {
     const line = (text: string, cls = '') => box.append(h('p', { class: cls }, text));
     const s = this.scene;
     if (s) line(countsLine(s.counts), 'counts');
+    if (this.line3d) {
+      const l = this.line3d;
+      if (l.retry) box.append(h('p', { class: `${l.cls} line3d`, role: 'alert' }, l.text + ' ', button(l.retry, () => this.retry3d(l.how === 'reload'), { class: 'retry' })));
+      else line(l.text, `${l.cls} line3d`);
+    }
+    if (this.is3d) for (const n of this.notes3d) line(n, 'note line3d');
     if (this.status.progress) line(this.status.progress, 'progress');
     if (this.status.long) line(this.status.long, 'progress');
     if (this.status.wait) line(this.status.wait, 'wait');
@@ -644,6 +993,7 @@ export class MapView implements ModeHost {
     const own = this.reading.picture ? this.pictures.get(this.reading.picture) : this.ground?.picture ? this.pictures.get(this.ground.picture) : undefined;
     const f = (n: number | null) => (n === null ? 'none' : n.toFixed(1));
     const parts = [
+      this.is3d ? 'the 3D view (the ground picture as a texture)' : 'the flat view',
       `picture first draw ${f(this.stats.firstPictureDrawMs)} ms after open`,
       own ? `picture read ${f(own.times.readMs)} ms, first copy ${f(own.times.firstCopyMs)} ms, all copies ${f(own.times.allCopiesMs)} ms` : 'no picture',
       `frame p50 ${f(p50(this.stats.frames))} ms, p95 ${f(p95(this.stats.frames))} ms over ${this.stats.frames.length} frames`,
@@ -716,7 +1066,15 @@ export class MapView implements ModeHost {
     this.fromPeek = false;
     this.clearPending = true;
     this.holdClear = true;
-    if (centre && this.scene && this.camera) {
+    if (centre && this.scene && this.surface && this.is3d) {
+      const it = this.scene.byId.get(ids[0]);
+      const at = it?.kind === 'pin' ? [it.x, it.y, it.z] : it?.kind === 'zone' ? [(it.bbox[0] + it.bbox[2]) / 2, (it.bbox[1] + it.bbox[3]) / 2, this.reading.groundZ] : null;
+      if (at) {
+        this.pageMove = true;
+        this.surface.centreOn(at[0], at[1], at[2]);
+        this.pageMove = false;
+      }
+    } else if (centre && this.scene && this.camera) {
       const it = this.scene.byId.get(ids[0]);
       const at = it?.kind === 'pin' ? [it.x, it.y] : it?.kind === 'zone' ? [(it.bbox[0] + it.bbox[2]) / 2, (it.bbox[1] + it.bbox[3]) / 2] : null;
       if (at) {
@@ -753,7 +1111,7 @@ export class MapView implements ModeHost {
    */
   private keepClear(): void {
     const s = this.scene;
-    if (!s || !this.camera) return;
+    if (!s || (!this.camera && !this.is3d)) return;
     const pin = [...this.selection].map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
     if (!pin) return;
     const root = this.root.getBoundingClientRect();
@@ -766,11 +1124,22 @@ export class MapView implements ModeHost {
       else right = p.left - root.left;
     }
     if (bottom - top < 60 || right < 60) return;
-    const [sx, sy] = toScreen(this.camera, this.view, pin.x, pin.y);
-    const m = 24;
-    if (sx >= m && sx <= right - m && sy >= top + m && sy <= bottom - m) return;
     const tx = right / 2;
     const ty = (top + bottom) / 2;
+    const m = 24;
+    if (this.surface && this.is3d) {
+      const sf = this.surface;
+      const p = sf.project(pin.x, pin.y, pin.z);
+      if (p && p[0] >= m && p[0] <= right - m && p[1] >= top + m && p[1] <= bottom - m) return;
+      this.pageMove = true;
+      if (p) sf.nudge(pin.x, pin.y, pin.z, p[0], p[1], tx, ty);
+      else sf.centreOn(pin.x, pin.y, pin.z);
+      this.pageMove = false;
+      return;
+    }
+    if (!this.camera) return;
+    const [sx, sy] = toScreen(this.camera, this.view, pin.x, pin.y);
+    if (sx >= m && sx <= right - m && sy >= top + m && sy <= bottom - m) return;
     this.camera = { ...this.camera, cx: this.camera.cx + (sx - tx) / this.camera.s, cy: this.camera.cy - (sy - ty) / this.camera.s };
     this.settled = true;
     this.scheduleRest(0);
@@ -947,7 +1316,41 @@ export class MapView implements ModeHost {
     return this.linesOn;
   }
 
+  /** The 3D camera's place and whether the ground's picture is on its plane (for a walk). */
+  walk3d(): { cam: number[] | null; picture: boolean; draws: number } {
+    const s = this.surface;
+    return { cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null, picture: !!s?.drewPicture, draws: s?.draws ?? 0 };
+  }
+
+  /** Where a Pin item stands on screen, in client pixels, in whichever view is drawn (for a walk). */
+  screenPoint(id: string): { x: number; y: number } | null {
+    const it = this.scene?.byId.get(id);
+    if (!it || it.kind !== 'pin') return null;
+    return this.pointOnScreen(it.x, it.y, it.z);
+  }
+
+  /** Where a point in the Map's frame stands on screen, in client pixels (flat ignores z; for a walk). */
+  pointOnScreen(x: number, y: number, z: number): { x: number; y: number } | null {
+    const r = (this.surface?.canvas ?? this.canvas).getBoundingClientRect();
+    if (this.surface && this.is3d) {
+      const p = this.surface.project(x, y, z);
+      return p ? { x: r.left + p[0], y: r.top + p[1] } : null;
+    }
+    if (!this.camera) return null;
+    const [sx, sy] = toScreen(this.camera, this.view, x, y);
+    return { x: r.left + sx, y: r.top + sy };
+  }
+
+  /** Try again (or Try 3D again) under a failed 3D view: the address drops `view=flat` if it held one. */
+  private retry3d(reload: boolean): void {
+    this.host.writer.setView(this.reading.id, false);
+    if (reload) location.reload();
+    else void this.start3d();
+  }
+
   destroy(): void {
+    this.destroyed = true;
+    this.stop3d();
     cancelAnimationFrame(this.frameReq);
     clearTimeout(this.restTimer);
     for (const d of this.disposers) d();

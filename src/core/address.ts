@@ -4,6 +4,9 @@
 //   &type=<type>&element=<id>           one element's Maps; its first Map is not written
 //   &at=<x>,<y>,<span>                  the camera, written by replaceState only at the end of the
 //                                       person's own gesture, never for a camera the page moved
+//   &view=flat                          a layout map with a depth drawn flat, by a press on Flat
+//                                       (replaceState; a press on 3D drops it; the 3D camera is
+//                                       never written, and `at`, a flat camera, is read only flat)
 //   &measure=1                          the measure readout
 // A press that writes the address first cancels a pending `at`, and an `at` write checks that the
 // entry it writes still shows the Map whose camera it holds; on an entry that shows its Map without
@@ -21,6 +24,8 @@ export interface Address {
   map: string | null;
   at: At | null;
   measure: boolean;
+  /** `flat` when a press asked a layout map with a depth to be drawn flat; absent or null otherwise. */
+  view?: 'flat' | null;
 }
 
 export const EMPTY: Address = { world: null, type: null, element: null, map: null, at: null, measure: false };
@@ -47,6 +52,7 @@ export function parseAddress(search: string): Address {
     map: get('map'),
     at: parseAt(get('at')),
     measure: q.get('measure') === '1',
+    view: q.get('view') === 'flat' ? 'flat' : null,
   };
 }
 
@@ -56,6 +62,7 @@ export function formatAddress(a: Address): string {
   if (a.type) q.set('type', a.type);
   if (a.element) q.set('element', a.element);
   if (a.map) q.set('map', a.map);
+  if (a.view === 'flat') q.set('view', 'flat');
   if (a.at) q.set('at', `${Math.round(a.at.x)},${Math.round(a.at.y)},${Math.round(a.at.span)}`);
   if (a.measure) q.set('measure', '1');
   const s = q.toString().replace(/%2C/g, ',');
@@ -153,6 +160,25 @@ export class AddressWriter {
     } catch {
       /* refused by the engine: the entry keeps its old state */
     }
+  }
+
+  /**
+   * A press on Flat or 3D for `map`: the same entry, `view=flat` set or dropped and `at` dropped
+   * (the other view fits). A pending `at` is cancelled first; the entry must still show `map`, and
+   * it is named, so a reload opens the same Map in the same view.
+   */
+  setView(map: string, flat: boolean): void {
+    this.cancelPending();
+    if (this.shownMap() !== map) return;
+    const now = this.current();
+    const url = formatAddress({ ...now, map: now.map ?? map, at: null, view: flat ? 'flat' : null });
+    const state: EntryState = entry(this.hist.state) ?? { mapper: 1, map, depth: 0 };
+    try {
+      this.hist.replaceState(state, '', url);
+    } catch {
+      return; // refused by the engine: the view still changed on the page
+    }
+    this.log.push({ how: 'replace', url });
   }
 
   /**

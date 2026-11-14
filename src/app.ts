@@ -959,10 +959,10 @@ export class App {
     document.title = `${reading.name} · ${ws.meta.name} · OnlyWorlds mapper`;
 
     const notes: string[] = [];
-    if (reading.kind === 'layout3d') notes.push(`This layout has a depth of ${reading.depth}. The 3D view comes in a later version; it is drawn flat here.`);
-    else if (reading.depth !== null) notes.push(`This map has a depth of ${reading.depth}; it is drawn flat.`);
+    if (reading.kind !== 'layout3d' && reading.depth !== null) notes.push(`This map has a depth of ${reading.depth}; it is drawn flat.`);
     if (ground) {
-      const where = reading.marginRead ? `at ${reading.groundOffset[0]}, ${reading.groundOffset[1]} (its margin, from the layout's own settings)` : 'at 0, 0 (the layout names no margin)';
+      let where = reading.marginRead ? `at ${reading.groundOffset[0]}, ${reading.groundOffset[1]} (its margin, from the layout's own settings)` : 'at 0, 0 (the layout names no margin)';
+      if (reading.kind === 'layout3d') where += reading.groundZRead ? `, at height ${reading.groundZ} in 3D (from the layout's own settings)` : ', at height 0 in 3D (the layout names no ground height)';
       const what = ground.picture ? 'its picture and Zones are drawn under the Pins' : 'it has no picture, so only its Zones are drawn';
       notes.push(`Drawn over its ground, the map ${ground.name}, placed ${where}: ${what}. The ground's own Pins are not drawn.`);
     }
@@ -987,7 +987,7 @@ export class App {
         else this.go({ world: ws.id, map: null, element: null, type: null, at: null, measure: false });
       },
     };
-    const mv = new MapView(host, this.page, reading, ground, { at: a.at, element });
+    const mv = new MapView(host, this.page, reading, ground, { at: a.at, element, flat: a.view === 'flat' });
     this.map = mv;
     if (header) mv.setExtra(header);
 

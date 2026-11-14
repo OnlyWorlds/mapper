@@ -15,10 +15,12 @@
     "walk:look": "node walk/look.mjs"
   },
   "dependencies": {
-    "@onlyworlds/sdk": "4.164.0"
+    "@onlyworlds/sdk": "4.164.0",
+    "three": "0.186.1"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",
+    "@types/three": "0.186.0",
     "typescript": "^5.9.3",
     "vite": "^8.3.8",
     "vitest": "^5.1.0"

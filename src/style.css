@@ -105,6 +105,10 @@ label { font-weight: 600; font-size: 0.95rem; }
 /* The map fills the page; everything else floats over it. */
 .mapview { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--map-bg); }
 .surface { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.mapview.in-3d .surface-flat { visibility: hidden; }
+.labels3d { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.label3d { position: absolute; transform: translateY(-50%); font: 12px var(--font, system-ui, sans-serif); color: var(--label); white-space: nowrap; text-shadow: 0 0 2px var(--halo), 0 0 2px var(--halo), 0 0 3px var(--halo); }
+.label3d.on { color: var(--accent); }
 /* The top block never takes more than its share of the map, whatever a name's length: the bar keeps
    Back and List at its top, a name is held to two lines (the full name in its title and the List),
    and the lines below it shrink and scroll. */

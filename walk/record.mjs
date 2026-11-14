@@ -86,7 +86,14 @@ await step('Sikelia map by address, measured', async () => {
   await complete();
   await page.waitForTimeout(3000);
 });
-void M_MAP; void M_LAYOUT; void S_LAYOUT;
+await step('Layouts by address', async () => {
+  // A layout opened by its own address (a shared link, a reload): its reads come in another order.
+  await page.goto(`${site.url}/?world=${M}&map=${M_LAYOUT}`);
+  await complete();
+  await page.goto(`${site.url}/?world=${S}&map=${S_LAYOUT}`);
+  await complete();
+});
+void M_MAP;
 writeFileSync(`${OUT}/api.json`, JSON.stringify({ recorded: new Date().toISOString(), api, media }));
 console.log(`recorded ${Object.keys(api).length} answers and ${Object.keys(media).length} pictures`);
 await browser.close();

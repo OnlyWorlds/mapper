@@ -67,6 +67,9 @@ export interface LineItem extends ItemBase {
   ay: number;
   bx: number;
   by: number;
+  /** The two Pins' heights, for the 3D view (flat never reads them). */
+  az: number;
+  bz: number;
   edges: LineEdge[];
 }
 

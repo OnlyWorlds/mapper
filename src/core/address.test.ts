@@ -74,8 +74,13 @@ function setup(url = `?world=${W}`) {
 describe('the address', () => {
   it('reads and writes its words', () => {
     const a = parseAddress(`?world=${W}&type=Location&element=${M1}&map=${M2}&at=10,20,300&measure=1`);
-    expect(a).toEqual({ world: W, type: 'location', element: M1, map: M2, at: { x: 10, y: 20, span: 300 }, measure: true });
+    expect(a).toEqual({ world: W, type: 'location', element: M1, map: M2, at: { x: 10, y: 20, span: 300 }, measure: true, view: null });
     expect(formatAddress(a)).toBe(`?world=${W}&type=location&element=${M1}&map=${M2}&at=10,20,300&measure=1`);
+  });
+  it('reads view=flat and nothing else as a view', () => {
+    expect(parseAddress(`?world=${W}&map=${M1}&view=flat`).view).toBe('flat');
+    expect(parseAddress(`?world=${W}&map=${M1}&view=3d`).view).toBeNull();
+    expect(formatAddress(parseAddress(`?world=${W}&map=${M1}&view=flat&at=1,2,3`))).toBe(`?world=${W}&map=${M1}&view=flat&at=1,2,3`);
   });
   it('drops an at it cannot read', () => {
     expect(parseAddress('?at=1,2').at).toBeNull();
@@ -128,6 +133,43 @@ describe('the address writer', () => {
     h.pushState({ mapper: 1, map: M2, depth: 1 }, '', `?world=${W}&map=${M2}`);
     t.flush();
     expect(h.url).toBe(`?world=${W}&map=${M2}`);
+  });
+
+  it('Flat writes view=flat by replace and drops at; 3D drops view; a gesture on flat keeps view', () => {
+    const { h, w, t } = setup(`?world=${W}&map=${M1}&at=1,2,3`);
+    w.gestureEnded(M1, { x: 4, y: 5, span: 6 }, 300);
+    w.setView(M1, true);
+    expect(w.hasPending).toBe(false);
+    t.flush();
+    expect(h.entries).toHaveLength(1);
+    expect(h.url).toBe(`?world=${W}&map=${M1}&view=flat`);
+    w.gestureEnded(M1, { x: 7, y: 8, span: 9 });
+    expect(h.url).toBe(`?world=${W}&map=${M1}&view=flat&at=7,8,9`);
+    w.setView(M1, false);
+    expect(h.url).toBe(`?world=${W}&map=${M1}`);
+  });
+
+  it('markShown keeps view=flat; a press that opens another Map drops it', () => {
+    const el = `?world=${W}&type=location&element=${M2}&view=flat`;
+    const { h, w } = setup(el);
+    w.markShown(M1);
+    expect(h.url).toBe(el);
+    w.push({ ...w.current(), map: M2, view: null });
+    expect(h.url).toBe(`?world=${W}&type=location&element=${M2}&map=${M2}`);
+    // A press built from the old address without naming view (the app's go) drops it too.
+    const { h: h2, w: w2 } = setup(`?world=${W}&map=${M1}&view=flat`);
+    w2.push({ world: W, map: M2, element: null, type: null, at: null, measure: false });
+    expect(h2.url).toBe(`?world=${W}&map=${M2}`);
+  });
+
+  it('Flat on the element view names the Map it shows; on an entry showing another Map it writes nothing', () => {
+    const el = `?world=${W}&type=location&element=${M2}`;
+    const { h, w } = setup(el);
+    w.markShown(M1);
+    w.setView(M1, true);
+    expect(h.url).toBe(`?world=${W}&type=location&element=${M2}&map=${M1}&view=flat`);
+    w.setView(M2, false);
+    expect(h.url).toBe(`?world=${W}&type=location&element=${M2}&map=${M1}&view=flat`);
   });
 
   it('marks the element view first Map without writing it, and takes its at', () => {

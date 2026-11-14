@@ -176,6 +176,8 @@ export function lineItems(edges: readonly { source: string; field: string; targe
       ay: pa.y,
       bx: pb.x,
       by: pb.y,
+      az: pa.z,
+      bz: pb.z,
       edges: list,
     });
   }

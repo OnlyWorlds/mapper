@@ -18,14 +18,7 @@ window.addEventListener('pageshow', (e) => app.pageShown(e.persisted));
 
 // A read-only window for the walks: copies of what the page holds, never a way to change it, and
 // nothing kept once a map is left (the scene is read through the open map).
-const pinPoint = (id: string) => {
-  const it = app.map?.scene?.byId.get(id);
-  const c = app.map?.camera;
-  const canvas = document.querySelector('canvas.surface');
-  if (!it || !c || !canvas || it.kind !== 'pin') return null;
-  const r = canvas.getBoundingClientRect();
-  return { x: r.left + (it.x - c.cx) * c.s + r.width / 2, y: r.top + r.height / 2 - (it.y - c.cy) * c.s };
-};
+const pinPoint = (id: string) => app.map?.screenPoint(id) ?? null;
 Object.defineProperty(window, '__mapper', {
   value: Object.freeze({
     get scene() {
@@ -65,9 +58,22 @@ Object.defineProperty(window, '__mapper', {
     screenOf(id: string) {
       return pinPoint(id);
     },
+    /** A point in the open Map's frame on screen, in whichever view is drawn. */
+    pointOf(x: number, y: number, z: number) {
+      return app.map?.pointOnScreen(x, y, z) ?? null;
+    },
     pins() {
       const s = app.map?.scene;
-      return s ? s.items.filter((i) => i.kind === 'pin').map((i) => ({ id: i.id, element: i.element })) : [];
+      return s ? s.items.flatMap((i) => (i.kind === 'pin' ? [{ id: i.id, element: i.element, style: i.style, x: i.x, y: i.y, z: i.z }] : [])) : [];
+    },
+    /** The open Map's picture items: where each sits in the Map's frame. */
+    pictures() {
+      const s = app.map?.scene;
+      return s ? s.items.flatMap((i) => (i.kind === 'picture' ? [{ id: i.id, rect: [...i.rect] }] : [])) : [];
+    },
+    /** The 3D view: off, loading, on or failed, and how many surfaces (WebGL contexts) the open map made. */
+    get view3d() {
+      return app.map ? { state: app.map.state3d, made: app.map.surfacesMade, canvases: document.querySelectorAll('canvas.surface-3d').length, ...app.map.walk3d() } : null;
     },
     /** Signed in or not: a yes or no, never the token. */
     get signedIn() {

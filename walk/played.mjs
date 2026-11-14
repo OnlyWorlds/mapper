@@ -8,6 +8,8 @@
 // (a control built from an older commit), MAPPER_PORT another port, SECTIONS=9,12 only those.
 import { chromium, firefox } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { GROUP_COLORS } from '@onlyworlds/sdk';
+import { colourStats, decodePng } from './png.mjs';
 import { serve } from './serve.mjs';
 import { signinWalk } from './signin.mjs';
 import { keyOf, MOPPETOPIA as M, SIKELIA as S, M_MAP, M_SPACE, M_LAYOUT, S_BIG, S_LAYOUT, S_ELEMENT, M_ELEMENT, AT } from './worlds.mjs';
@@ -394,8 +396,9 @@ for (const [vp, opts] of [
     await complete();
     const lay = await mapper(() => window.__mapper.scene);
     check(`${vp} the layout map draws its lines`, (await mapper(() => window.__mapper.linesShown)) === true && lay.counts.lines === 415 && lay.counts.pins === 170, JSON.stringify(lay.counts));
+    await page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
     const status = await page.textContent('.status');
-    check(`${vp} the layout says 3D comes later and names its ground`, status.includes('The 3D view comes in a later version') && status.includes('Drawn over its ground, the map Moppetopia Space Map'));
+    check(`${vp} the layout opens in 3D and names its ground and its height`, status.includes('In 3D:') && status.includes('Drawn over its ground, the map Moppetopia Space Map') && status.includes('at height 750 in 3D'), status.slice(0, 400));
     check(`${vp} no buttons for lines on a layout`, (await page.locator('button:has-text("Show links")').count()) === 0);
     await page.waitForTimeout(300);
     await snap('layout');
@@ -406,6 +409,257 @@ for (const [vp, opts] of [
       await page.waitForSelector('.card:not([hidden])');
       await snap('layout-press');
     }
+  });
+
+  // 3d. A layout map with a depth in 3D: WebGL draws it with its ground; a press on a projected
+  // Pin selects it and a turn selects nothing; Flat and 3D keep the selection and write view=flat or
+  // drop it; a reload stays flat; one context at a time; the chunk blocked, or WebGL refused, draws
+  // flat with its line and a way back.
+  await section('3d', async () => {
+    const open = `${site.url}/?world=${M}&map=${M_LAYOUT}`;
+    const v3 = () => mapper(() => window.__mapper.view3d);
+    const on = () => page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
+    await page.goto(open);
+    await complete();
+    await on();
+    await page.waitForFunction(() => window.__mapper.view3d?.picture, null, { timeout: 30_000 });
+    await page.waitForTimeout(400);
+    let v = await v3();
+    check(`${vp} 3D: one WebGL canvas, the ground's picture on its plane`, v.canvases === 1 && v.made === 1 && v.picture === true, JSON.stringify(v));
+    const shotBuf = await page.locator('canvas.surface-3d').screenshot();
+    const px = colourStats(decodePng(shotBuf));
+    check(`${vp} 3D: the canvas holds a drawing (colours, ground)`, px.colours > 60 && px.unlike > 0.15, JSON.stringify(px));
+    await snap('3d');
+    // A Pin standing clear of the bar, the zoom buttons and the card's side.
+    const vw = page.viewportSize();
+    const pins = await mapper(() => window.__mapper.pins());
+    let target = null;
+    for (const p of pins) {
+      const pt = await mapper((id) => window.__mapper.screenOf(id), p.id);
+      if (pt && pt.x > 40 && pt.x < vw.width * (phone ? 0.85 : 0.55) && pt.y > vw.height * 0.35 && pt.y < vw.height * (phone ? 0.5 : 0.85)) {
+        const near = await mapper(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y]);
+        if (String(near).includes('surface-3d')) {
+          target = { ...p, ...pt };
+          break;
+        }
+      }
+    }
+    check(`${vp} 3D: a Pin stands clear to press`, !!target);
+    if (!target) return;
+    await press(target.x, target.y);
+    await page.waitForSelector('.card:not([hidden])');
+    let sel = await mapper(() => window.__mapper.selection);
+    check(`${vp} 3D: a press on a projected Pin selects it`, sel.length >= 1 && (phone ? sel.includes(target.id) : sel[0] === target.id), JSON.stringify(sel));
+    const before = (await v3()).cam;
+    // A turn: one finger or the left button dragged across the map, from a point the map holds (on a
+    // phone the sheet covers the lower part).
+    let [x0, y0] = [vw.width * 0.3, vw.height * 0.7];
+    for (const fy of [0.7, 0.6, 0.5, 0.45, 0.4, 0.35]) {
+      const cls = String(await mapper(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [vw.width * 0.3, vw.height * fy]));
+      if (cls.includes('surface-3d')) {
+        y0 = vw.height * fy;
+        break;
+      }
+    }
+    if (phone && which === 'chromium') {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x0, y: y0 }] });
+      for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x0 + i * 12, y: y0 - i * 4 }] });
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    } else if (!phone) {
+      await page.mouse.move(x0, y0);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) await page.mouse.move(x0 + i * 12, y0 - i * 4);
+      await page.mouse.up();
+    }
+    if (!phone || which === 'chromium') {
+      await page.waitForTimeout(300);
+      const after = (await v3()).cam;
+      sel = await mapper(() => window.__mapper.selection);
+      check(`${vp} 3D: a drag turns the view and selects nothing new`, JSON.stringify(after) !== JSON.stringify(before) && sel.includes(target.id), `${before} -> ${after}; ${sel}`);
+      check(`${vp} 3D: the camera is never written`, !(await where()).includes('at='), await where());
+    }
+    const kept = await mapper(() => window.__mapper.selection);
+    // Flat keeps the selection and the card, writes view=flat, and lets the context go.
+    await page.click('button.view-toggle');
+    v = await v3();
+    check(`${vp} Flat: drawn flat, the 3D canvas gone`, v.state === 'off' && v.canvases === 0, JSON.stringify(v));
+    check(`${vp} Flat: view=flat by replace, no at`, (await where()).includes('view=flat') && !(await where()).includes('at='), await where());
+    check(`${vp} Flat: the selection and the card carried`, JSON.stringify(await mapper(() => window.__mapper.selection)) === JSON.stringify(kept) && (await page.isVisible('.card')));
+    await snap('3d-flat');
+    // 3D again: the same selection, a second surface, still one canvas.
+    await page.click('button.view-toggle');
+    await on();
+    v = await v3();
+    check(`${vp} 3D again: one canvas, the selection carried, view dropped`, v.canvases === 1 && v.made === 2 && JSON.stringify(await mapper(() => window.__mapper.selection)) === JSON.stringify(kept) && !(await where()).includes('view='), JSON.stringify(v));
+    // A reload with view=flat stays flat.
+    await page.click('button.view-toggle');
+    await page.reload();
+    await complete();
+    await page.waitForTimeout(300);
+    v = await v3();
+    check(`${vp} a reload with view=flat stays flat`, v.state === 'off' && v.canvases === 0 && (await page.textContent('button.view-toggle')) === '3D', JSON.stringify(v));
+    // Leaving the map lets its context go.
+    await page.click('button.view-toggle');
+    await on();
+    await page.click('button.back');
+    await page.waitForTimeout(200);
+    check(`${vp} leaving a 3D map leaves no 3D canvas`, (await page.locator('canvas.surface-3d').count()) === 0);
+
+    // The 3D code cannot be fetched: flat, said; Try again reloads the page, and 3D draws once the code
+    // can be fetched. The control: an import again inside the same page stays failed (the browser
+    // keeps a failed module), which is why Try again reloads.
+    const blocked = await ctx.newPage();
+    let block = true;
+    let chunkUrl = null;
+    await blocked.route('**/assets/three3d-*.js', (r) => {
+      chunkUrl = r.request().url();
+      return block ? r.abort('failed') : r.continue();
+    });
+    await blocked.goto(open);
+    await blocked.waitForFunction(() => window.__mapper.view3d?.state === 'failed', null, { timeout: 30_000 });
+    const line = await blocked.textContent('.line3d');
+    check(`${vp} chunk blocked: drawn flat, said, Try again reloads`, line.includes('The 3D view did not load; drawn flat. Try again reloads the page.') && (await blocked.locator('canvas.surface-3d').count()) === 0, line);
+    await blocked.waitForFunction(() => window.__mapper.scene?.complete, null, { timeout: 60_000 });
+    const flatPx = colourStats(decodePng(await blocked.locator('canvas.surface-flat').screenshot()));
+    check(`${vp} chunk blocked: the flat map is drawn`, flatPx.colours > 30, JSON.stringify(flatPx));
+    await blocked.screenshot({ path: `.scratch/shots/played-${which}-${vp}-${String(++shot).padStart(2, '0')}-3d-blocked.png` });
+    block = false;
+    const again = await blocked.evaluate((u) => import(u).then(() => 'loaded', () => 'failed'), chunkUrl);
+    check(`${vp} chunk blocked, the control: an import again in the same page stays failed`, again === 'failed', again);
+    await Promise.all([blocked.waitForEvent('load'), blocked.click('.line3d button')]);
+    const back = await blocked.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 60_000 }).then(() => true, () => false);
+    check(`${vp} chunk blocked: Try again reloads and 3D draws`, back && !(await blocked.evaluate(() => location.search)).includes('view='), JSON.stringify(await blocked.evaluate(() => window.__mapper.view3d)));
+    await blocked.close();
+
+    // WebGL refused (webgl2 and webgl only; the flat canvas still draws): flat with its line.
+    const refused = await ctx.newPage();
+    await refused.addInitScript(() => {
+      const real = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+        return /^(webgl2|webgl|experimental-webgl)$/i.test(String(kind)) ? null : real.call(this, kind, ...rest);
+      };
+    });
+    await refused.goto(open);
+    await refused.waitForFunction(() => window.__mapper.view3d?.state === 'failed', null, { timeout: 30_000 });
+    await refused.waitForFunction(() => window.__mapper.scene?.complete, null, { timeout: 60_000 });
+    const rl = await refused.textContent('.line3d');
+    const rPx = colourStats(decodePng(await refused.locator('canvas.surface-flat').screenshot()));
+    check(`${vp} WebGL refused: drawn flat with its line, the flat canvas drawn`, rl.includes('This browser could not start the 3D view; drawn flat.') && (await refused.locator('canvas.surface-3d').count()) === 0 && rPx.colours > 30, `${rl} ${JSON.stringify(rPx)}`);
+    await refused.close();
+  });
+
+  // 3d-more. The ground never hides, and it is the right way up; a buried Pin answers; the element
+  // view's chip into a layout opens it in 3D, marked and centred; on a phone the sheet never covers
+  // the selected Pin.
+  await section('3d-more', async () => {
+    const open = `${site.url}/?world=${M}&map=${M_LAYOUT}`;
+    await page.goto(open);
+    await complete();
+    await page.waitForFunction(() => window.__mapper.view3d?.state === 'on' && window.__mapper.view3d?.picture, null, { timeout: 30_000 });
+    await page.waitForTimeout(300);
+    const vw = page.viewportSize();
+    const clear = async (pt) => pt && pt.x > 30 && pt.x < vw.width * (phone ? 0.9 : 0.6) && pt.y > vw.height * 0.3 && pt.y < vw.height * (phone ? 0.5 : 0.9) && String(await mapper(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y])).includes('surface-3d');
+    // A Pin buried under the ground (z below 750), pressed from above.
+    const pins = await mapper(() => window.__mapper.pins());
+    let buried = null;
+    for (const p of pins.filter((q) => q.z < 750)) {
+      const pt = await mapper((id) => window.__mapper.screenOf(id), p.id);
+      if (await clear(pt)) {
+        buried = { ...p, ...pt };
+        break;
+      }
+    }
+    check(`${vp} 3D: a buried Pin stands clear to press`, !!buried, `${pins.filter((q) => q.z < 750).length} buried`);
+    if (buried) {
+      const shot3d = decodePng(await page.screenshot());
+      const dpr = shot3d.w / vw.width;
+      const at = (png, x, y) => {
+        const i = (Math.round(y * dpr) * png.w + Math.round(x * dpr)) * 4;
+        return [png.data[i], png.data[i + 1], png.data[i + 2]];
+      };
+      const want = GROUP_COLORS[buried.style.slice(4)]?.light;
+      const got = at(shot3d, buried.x, buried.y);
+      const hex = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
+      const dist = want ? got.reduce((a, v, k) => a + Math.abs(v - hex(want)[k]), 0) : 999;
+      check(`${vp} 3D: a buried Pin is drawn over the ground in its own colour`, dist < 60, `${got} vs ${want}`);
+      await press(buried.x, buried.y);
+      await page.waitForSelector('.card:not([hidden])');
+      const sel = await mapper(() => window.__mapper.selection);
+      check(`${vp} 3D: a buried Pin answers a press`, sel.includes(buried.id), JSON.stringify(sel));
+      if (phone) {
+        await page.waitForTimeout(250);
+        const pt = await mapper((id) => window.__mapper.screenOf(id), buried.id);
+        const sheet = await page.locator('.panel').boundingBox();
+        check(`${vp} 3D: the sheet never covers the selected Pin`, pt && sheet && pt.y < sheet.y - 10, `${JSON.stringify(pt)} sheet ${JSON.stringify(sheet)}`);
+      }
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.click('.card .close').catch(() => {});
+    }
+    // The right way up: the same nine ground points read from straight above in 3D and in the flat
+    // view agree in colour.
+    const pic = (await mapper(() => window.__mapper.pictures()))[0];
+    if (!phone && pic) {
+      await page.focus('canvas.surface-3d');
+      for (let i = 0; i < 14; i++) await page.keyboard.press('ArrowUp');
+      await page.waitForTimeout(300);
+      const [px, py, pw, ph] = pic.rect;
+      // A grid over the whole picture, each point read as the mean of a small block (two copies of
+      // different sizes still agree). The 3D read is compared with the flat read at the same points
+      // and at the points mirrored top to bottom: the right way up agrees with the first far more
+      // than with the second (Pins and lines add the same noise to both). Dark space alone cannot
+      // tell (the first instrument, nine points near the edges, passed a ground drawn upside down).
+      const pts = [];
+      for (let i = 0; i < 12; i++) for (let j = 0; j < 8; j++) pts.push([px + pw * (0.04 + (0.92 * i) / 11), py + ph * (0.06 + (0.88 * j) / 7)]);
+      const mirrored = pts.map(([x, y]) => [x, py + ph - (y - py)]);
+      const read = async (z, at = pts) => {
+        const png = decodePng(await page.screenshot());
+        const dpr = png.w / vw.width;
+        const out = [];
+        for (const [x, y] of at) {
+          const s = await mapper(([a, b, c]) => window.__mapper.pointOf(a, b, c), [x, y, z]);
+          const sum = [0, 0, 0];
+          let n = 0;
+          for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+            const i = ((Math.round(s.y * dpr) + dy) * png.w + Math.round(s.x * dpr) + dx) * 4;
+            for (let k = 0; k < 3; k++) sum[k] += png.data[i + k];
+            n++;
+          }
+          out.push(sum.map((v) => Math.round(v / n)));
+        }
+        return out;
+      };
+      const in3d = await read(750);
+      await snap('3d-top');
+      await page.click('button.view-toggle');
+      await page.waitForTimeout(400);
+      const flat = await read(0);
+      const flatMirror = await read(0, mirrored);
+      await snap('3d-top-flat');
+      const dist = (a, b) => a.reduce((s, v, j) => s + Math.abs(v - b[j]), 0);
+      const same = in3d.reduce((s, c, k) => s + dist(c, flat[k]), 0) / pts.length;
+      const mirror = in3d.reduce((s, c, k) => s + dist(c, flatMirror[k]), 0) / pts.length;
+      check(`${vp} 3D: the ground is the right way up (closer to flat than to flat mirrored)`, same < mirror * 0.75, `mean distance ${same.toFixed(1)} to flat, ${mirror.toFixed(1)} to flat mirrored`);
+      await page.click('button.view-toggle');
+    }
+    // The element view's chip into the layout: 3D, the element marked and centred (a peek on a phone).
+    await page.goto(`${site.url}/?world=${M}&type=location&element=${M_ELEMENT}`);
+    await complete();
+    await page.click('.element-head .chip:has-text("Moppetopia: layout")').catch(async () => {
+      await page.click('.maps-fold');
+      await page.click('.element-head .chip:has-text("Moppetopia: layout")');
+    });
+    await complete();
+    await page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
+    await page.waitForTimeout(300);
+    const marked = await mapper(() => window.__mapper.marked);
+    const mpt = marked.length ? await mapper((id) => window.__mapper.screenOf(id), marked[0]) : null;
+    const panel = await page.locator('.panel').boundingBox().catch(() => null);
+    const bottom = phone && panel ? panel.y : vw.height;
+    const right = !phone && panel ? panel.x : vw.width;
+    check(`${vp} the element view's chip opens the layout in 3D, marked, in the free part of the map`, marked.length > 0 && mpt && mpt.x > 0 && mpt.x < right && mpt.y > 0 && mpt.y < bottom, `${JSON.stringify(mpt)} right ${right} bottom ${bottom}`);
+    if (phone) check(`${vp} the element view in 3D opens as a peek on a phone`, (await mapper(() => window.__mapper.peek)) === true);
+    await snap('3d-element');
   });
 
   // 6. The element view by address: its first Map not written, the element selected and marked.
