@@ -43,6 +43,9 @@ const fid = (n) => `55555555-5555-7555-8555-${String(n).padStart(12, '0')}`;
 const F_FAR = fid(1);
 const F_NOSIZE = fid(2);
 const F_LONG = fid(3);
+// A layout with a depth and no written size: its frame comes from its Pins, and the element view
+// knows only its own Pin until the map's read brings the far one (a stand-in frame, then the real one).
+const F_DEEP = fid(4);
 const F_NEAR = fid(10);
 const F_AWAY = fid(11);
 const F_ZONE = fid(20);
@@ -54,14 +57,16 @@ const fPin = (n, map, el, x, y) => ({ id: fid(n), type: 'pin', name: 'pin', map,
 function playedF(u) {
   const p = u.pathname;
   const map = u.searchParams.get('map');
-  const on = (rows) => page1(map ? rows.filter((r) => r.map === map) : rows);
-  if (p.startsWith('/api/v2/world')) return json(200, { id: F, name: 'Shapes', counts: { total: 9, types: { map: 3, pin: 4, location: 2 } } });
+  const element = u.searchParams.get('element');
+  const on = (rows) => page1(rows.filter((r) => (!map || r.map === map) && (!element || r.element_id === element)));
+  if (p.startsWith('/api/v2/world')) return json(200, { id: F, name: 'Shapes', counts: { total: 12, types: { map: 4, pin: 6, location: 2 } } });
   if (p.startsWith('/api/v2/map')) return page1([
     { id: F_FAR, type: 'map', name: 'Far Pin', width: 1000, height: 1000 },
     { id: F_NOSIZE, type: 'map', name: 'No size', image_url: PICTURE },
     { id: F_LONG, type: 'map', name: LONG_NAME, width: 1000, height: 800 },
+    { id: F_DEEP, type: 'map', name: 'Deep, no size', depth: 1000, x_layout: { method: 'played' } },
   ]);
-  if (p.startsWith('/api/v2/pin')) return on([fPin(30, F_FAR, F_NEAR, 100, 100), fPin(31, F_FAR, F_AWAY, 100000, 100000), fPin(32, F_NOSIZE, F_NEAR, 300, 300), fPin(33, F_LONG, F_NEAR, 500, 400)]);
+  if (p.startsWith('/api/v2/pin')) return on([fPin(30, F_FAR, F_NEAR, 100, 100), fPin(31, F_FAR, F_AWAY, 100000, 100000), fPin(32, F_NOSIZE, F_NEAR, 300, 300), fPin(33, F_LONG, F_NEAR, 500, 400), { ...fPin(34, F_DEEP, F_NEAR, 100, 100), z: 50 }, { ...fPin(35, F_DEEP, F_AWAY, 5000, 4000), z: 900 }]);
   if (p.startsWith('/api/v2/marker')) return on([
     { id: fid(40), type: 'marker', map: F_FAR, zone: F_ZONE, x: 200, y: 200, order: 0 },
     { id: fid(41), type: 'marker', map: F_FAR, zone: F_ZONE, x: 100000, y: 300, order: 1 },
@@ -700,6 +705,32 @@ for (const [vp, opts] of [
     check(`${vp} the element view in 3D keeps its Pin centred after the list completes`, off < 30, `${off.toFixed(0)} px off`);
     if (phone) check(`${vp} the element view in 3D opens as a peek on a phone`, (await mapper(() => window.__mapper.peek)) === true);
     await snap('3d-element');
+  });
+
+  // 3d-stand-in. A layout with a depth and no written size, opened from the element view: its frame is
+  // a stand-in (the element's own Pin) until the map's read brings the far Pin. The centring waits for
+  // the final frame, so the camera stands back far enough for the whole layout, never at the stand-in's.
+  await section('3d-stand-in', async () => {
+    await page.goto(`${site.url}/?world=${F}&type=location&element=${F_NEAR}`);
+    await complete();
+    // Slow answers, so 3D is on while the frame is still the stand-in (instant ones end it first).
+    slowMs = 1500;
+    await page.click('.element-head .chip:has-text("Deep, no size")').catch(async () => {
+      await page.click('.maps-fold');
+      await page.click('.element-head .chip:has-text("Deep, no size")');
+    });
+    await page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
+    const standIn = await mapper(() => window.__mapper.scene?.frame.from !== 'written' && !window.__mapper.scene?.complete && window.__mapper.scene?.counts.pins === 1);
+    await complete();
+    slowMs = 0;
+    check(`${vp} 3D was on while the frame was the stand-in (one Pin, the list not complete)`, standIn);
+    await page.waitForTimeout(1000);
+    const v = await mapper(() => window.__mapper.view3d);
+    const d = v.cam ? Math.hypot(v.cam[0] - 100, v.cam[1] - 100, v.cam[2] - 50) : 0;
+    const marked = await mapper(() => window.__mapper.marked);
+    // The whole layout's fit stands about 7,800 units off; the stand-in's (one Pin and the depth) about 1,200.
+    check(`${vp} 3D on a stand-in frame: the element's Pin marked, the camera fitted to the final frame`, marked.length === 1 && d > 4000, `${Math.round(d)} units from the Pin; ${JSON.stringify(v)}`);
+    await snap('3d-stand-in');
   });
 
   // 6. The element view by address: its first Map not written, the element selected and marked.
