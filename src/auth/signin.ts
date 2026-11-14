@@ -109,6 +109,9 @@ export async function beginSignIn(resume: string | null, opts: { navigate?: (url
   await new OwV2Client({ baseUrl: BASE_URL, client: CLIENT_NAME }).signInWithOnlyWorlds({
     clientId: SIGN_IN_CLIENT_ID,
     redirectUri: SIGN_IN_REDIRECT_URI,
+    // Maps only reads a world, so the token it is given can read and nothing more:
+    // every write it could make is refused, revoking itself aside.
+    scope: 'world:read',
     storage,
     resume: resumeOf(resume),
     navigate: opts.navigate ?? ((url) => globalThis.location.replace(url)),

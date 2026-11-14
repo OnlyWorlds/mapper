@@ -74,6 +74,8 @@ describe('the round trip', () => {
     expect(url.searchParams.get('client_id')).toBe('maps');
     expect(url.searchParams.get('redirect_uri')).toBe(SIGN_IN_REDIRECT_URI);
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    // Maps only reads, so it asks OnlyWorlds for a read-only token.
+    expect(url.searchParams.get('scope')).toBe('world:read');
     // The resume rides in the SDK's own record.
     expect(JSON.parse(store.map.get(SIGN_IN_RECORD_KEY)!).resume).toBe(`/?world=${W}`);
 

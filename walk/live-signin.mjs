@@ -200,7 +200,7 @@ page.on('pageerror', (e) => {
 page.on('response', async (r) => {
   if (r.url().split('?')[0] !== `${API}/auth/token` || r.request().method() !== 'POST') return;
   const b = await r.json().catch(() => null);
-  if (typeof b?.token_id === 'string' && typeof b?.token === 'string') exchanged.push({ n: exchanged.length + 1, id: b.token_id, token: b.token, expiresAt: b.expires_at ?? null });
+  if (typeof b?.token_id === 'string' && typeof b?.token === 'string') exchanged.push({ n: exchanged.length + 1, id: b.token_id, token: b.token, expiresAt: b.expires_at ?? null, scope: b.scope ?? null });
 });
 /** The reads the page sends to OnlyWorlds for a world, and whether each carried the token: never the token itself. */
 const reads = [];
@@ -228,7 +228,7 @@ const mark = () => page.evaluate(() => { window.__old = true; }).catch(() => {})
  * page (Continue), each when it comes, until the mapper has settled on its own address again.
  */
 async function signIn(n) {
-  const seen = { signInPage: 0, consent: 0 };
+  const seen = { signInPage: 0, consent: 0, consentReadsOnly: null };
   const before = exchanged.length;
   await mark();
   await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).first().click();
@@ -263,6 +263,7 @@ async function signIn(n) {
     if (where === 'consent') {
       if (++seen.consent > 1) throw new Error(`sign-in ${n}: keel's consent page came back after Continue`);
       await shot(`${n}-consent`);
+      seen.consentReadsOnly = (await page.locator('body').innerText()).includes('This sign-in reads only');
       await mark();
       await page.locator('button[name="decision"][value="continue"]').click();
     }
@@ -302,6 +303,17 @@ const at = await page.evaluate(() => location.pathname + location.search + locat
 check('the return came through /signin/callback and the home stands at /', via.includes('maps.onlyworlds.com/signin/callback') && via[via.length - 1] === 'maps.onlyworlds.com/' && at === '/', `${via.join(' > ')}; at ${at}`);
 check('signed in', (await signedIn()) === true);
 const t1 = exchanged[0];
+// Maps asks for a read-only token (scope world:read): the token answer names the scope, the account's
+// list carries it on that token's row, and the consent page, when shown, says the sign-in reads only.
+check('the token answer says the token is read-only', t1?.scope === 'world:read', String(t1?.scope));
+if (first.consent) check('the consent page says the sign-in reads only', first.consentReadsOnly === true);
+else note('the consent page was not shown (an earlier consent covers a read-only sign-in): its sentence not read');
+{
+  const got = await acct('GET', '/account/tokens').catch(() => null);
+  const rows = Array.isArray(got?.body?.data) ? got.body.data : [];
+  const row = rows.find((r) => r?.id === t1?.id);
+  check('the account\'s token list marks it read-only', row?.scope === 'world:read', row ? String(row.scope) : 'row not listed');
+}
 if (t1?.expiresAt) {
   const hours = (Date.parse(t1.expiresAt) - Date.now()) / 3_600_000;
   check('the token ends by itself in six hours', hours > 5.9 && hours <= 6.01, `${hours.toFixed(3)} h`);
