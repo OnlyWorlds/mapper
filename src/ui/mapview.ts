@@ -298,8 +298,10 @@ export class MapView implements ModeHost {
     this.moved3d = false;
     this.placed3d = false;
     this.centred3d = false;
-    // A flat gesture's pending `at` dies with the flat view it described.
+    // A flat gesture's `at`, pending or already written while the code loaded, dies with the flat
+    // view it described (the 3D camera is never in the address).
     this.host.writer.cancelPending();
+    if (this.host.writer.current().at) this.host.writer.setView(this.reading.id, false);
     this.line3d = { text: isPhone() ? 'In 3D: one finger turns, two fingers zoom and move.' : 'In 3D: drag to turn, the wheel or two fingers to zoom, right-drag to move.', cls: 'note', retry: null };
     this.root.classList.add('in-3d');
     this.labelBox.hidden = false;
@@ -396,19 +398,28 @@ export class MapView implements ModeHost {
     this.pageMove = false;
   }
 
-  /** The page moves the 3D camera on purpose: never written, and no later fit undoes it. */
+  /** The frame is final: written, the picture's, or the list complete (a stand-in frame still moves). */
+  private frameFinal(): boolean {
+    const s = this.scene;
+    return !!s && (s.frame.from === 'written' || s.frame.from === 'picture' || s.complete);
+  }
+
+  /**
+   * The page moves the 3D camera on purpose: never written, and once the frame is final no later fit
+   * undoes it (a placement on a stand-in frame lets the fit that brings the real frame still run).
+   */
   private place3d(move: (sf: Surface3D) => void): void {
     if (!this.surface) return;
     this.pageMove = true;
     move(this.surface);
     this.pageMove = false;
-    this.placed3d = true;
+    if (this.frameFinal()) this.placed3d = true;
   }
 
-  /** The element view in 3D: its first Pin at the centre, once, unless the person moved first. */
+  /** The element view in 3D: its first Pin at the centre, once the frame is final, unless the person moved first. */
   private centre3d(): void {
     const s = this.scene;
-    if (!this.surface || !s || !this.focus || this.centred3d || this.moved3d) return;
+    if (!this.surface || !s || !this.focus || this.centred3d || this.moved3d || !this.frameFinal()) return;
     const pin = (s.byElement.get(this.focus) ?? []).map((id) => s.byId.get(id)).find((it): it is PinItem => it?.kind === 'pin');
     if (!pin) return;
     this.place3d((sf) => sf.centreOn(pin.x, pin.y, pin.z));

@@ -420,7 +420,9 @@ for (const [vp, opts] of [
   await section('3d', async () => {
     const open = `${site.url}/?world=${M}&map=${M_LAYOUT}`;
     const v3 = () => mapper(() => window.__mapper.view3d);
-    const on = () => page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 });
+    const on = () => page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(async () => {
+      throw new Error(`3D never came on at ${await where()}: ${JSON.stringify(await v3())}; ${(await page.textContent('.status').catch(() => '')).slice(0, 200)}`);
+    });
     await page.goto(open);
     await complete();
     await on();
@@ -481,6 +483,17 @@ for (const [vp, opts] of [
       check(`${vp} 3D: a drag turns the view and selects nothing new`, JSON.stringify(after) !== JSON.stringify(before) && sel.includes(target.id), `${before} -> ${after}; ${sel}`);
       check(`${vp} 3D: the camera is never written`, !(await where()).includes('at='), await where());
     }
+    if (!phone) {
+      // The hover's cursor shows on the canvas drawn; Escape on the card hands focus back to it.
+      await page.mouse.move(target.x, target.y);
+      await page.waitForTimeout(150);
+      check(`${vp} 3D: a hovered Pin shows the pointer cursor`, (await page.evaluate(() => document.querySelector('canvas.surface-3d').style.cursor)) === 'pointer');
+      await page.focus('.card .close');
+      await page.keyboard.press('Escape');
+      check(`${vp} 3D: Escape on the card hands the keyboard back to the 3D map`, String(await page.evaluate(() => document.activeElement?.className ?? '')).includes('surface-3d'), await page.evaluate(() => document.activeElement?.tagName));
+      await press(target.x, target.y);
+      await page.waitForSelector('.card:not([hidden])');
+    }
     const kept = await mapper(() => window.__mapper.selection);
     // Flat keeps the selection and the card, writes view=flat, and lets the context go.
     await page.click('button.view-toggle');
@@ -501,9 +514,12 @@ for (const [vp, opts] of [
     await page.waitForTimeout(300);
     v = await v3();
     check(`${vp} a reload with view=flat stays flat`, v.state === 'off' && v.canvases === 0 && (await page.textContent('button.view-toggle')) === '3D', JSON.stringify(v));
-    // Leaving the map lets its context go.
-    await page.click('button.view-toggle');
+    // A flat camera in the address (a link from the flat build) is dropped when 3D draws.
+    await page.goto(`${open}&at=1200,800,600`);
     await on();
+    check(`${vp} 3D drops a flat camera's at from the address`, !(await where()).includes('at='), await where());
+    // Leaving the map (in 3D since the address above) lets its context go.
+    check(`${vp} 3D is on before leaving`, (await v3()).canvases === 1);
     await page.click('button.back');
     await page.waitForTimeout(200);
     check(`${vp} leaving a 3D map leaves no 3D canvas`, (await page.locator('canvas.surface-3d').count()) === 0);
