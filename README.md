@@ -23,13 +23,13 @@ An id that is not an id is said at once. A world that is not public, or not ther
 - **The card.** Press a Pin, a Zone, a name or a line to see what it is: the element's name and type, where it stands, its links on this map, and the OnlyWorlds mark, which opens the element in other OnlyWorlds tools. On a phone, a press over several Pins lists them all.
 - **The List**, one row per element the map places, by name, with its type and position: the map for a keyboard or a screen reader, one press away.
 - **A layout's ground.** A layout drawn over another map shows that map's picture and Zones under its Pins, placed where the layout's own settings say.
-- **Layouts with a depth** are drawn flat in this version, with a line saying the 3D view comes later.
+- **Layouts with a depth open in 3D.** Each Pin stands at its height, with a thin stem down to the ground's height; the links run between the Pins where they stand; the ground's picture lies at its own height and never hides what is under it. Drag to turn (one finger on a phone), the wheel or two fingers to zoom, right-drag to move; the arrow keys turn, + and − zoom, Fit and `0` show the whole map again. The selection, the card and the List are the same as flat, and **Flat** draws the same map flat. The 3D view's code is fetched only when a 3D map opens; if it cannot be fetched, or the browser cannot start WebGL, the map is drawn flat with a line saying why.
 
 The page says what it reads while it reads (Pins, then Markers, then Zones, then the elements), draws what has arrived, and says when a read fails, with Try again. OnlyWorlds lets a visitor read 60 times a minute; when that is reached the page waits and says for how long. What the map reading leaves aside (a Marker whose Zone is not served, a Zone with no Marker) is said in one line once every read has landed.
 
 ## The address
 
-The home is `/`. The address keeps the view: `&map=<id>` when you open a map (Back returns to the list), and `&at=<x>,<y>,<span>` after you move the map yourself, so a shared link opens the same place; on an element's maps that write names the map too, so the link opens the same one (the span is the map units across the shorter side of the window, so a phone and a desk see the same area). Add `&measure=1` for a readout of the picture's first draw and the frame times.
+The home is `/`. The address keeps the view: `&map=<id>` when you open a map (Back returns to the list), and `&at=<x>,<y>,<span>` after you move the map yourself, so a shared link opens the same place; on an element's maps that write names the map too, so the link opens the same one (the span is the map units across the shorter side of the window, so a phone and a desk see the same area). On a layout with a depth, Flat adds `&view=flat`; the 3D camera is not kept in the address, so a link to a 3D map opens it whole. Add `&measure=1` for a readout of the picture's first draw and the frame times.
 
 ## Run it
 
@@ -48,7 +48,8 @@ Everything drawn comes from one scene list, made by a pure builder from the open
 
 ```
 src/core/    the pure part: kinds of map, the store and the slice, the builder (scene.ts),
-             the pointer's order (hit.ts), the camera, labels, the address and its writer,
+             the pointer's order (hit.ts, and hit3d.ts for the 3D view's projected list),
+             the camera, labels, the address and its writer,
              the home's order of a world's maps and its words (home.ts), the demo worlds
              built into the page (demos.ts, written by walk/demos.mjs)
 src/net/     reads: one at a time (a page that reads several worlds shares one queue), each with
@@ -57,7 +58,8 @@ src/net/     reads: one at a time (a page that reads several worlds shares one q
 src/auth/    Sign in with OnlyWorlds (the round trip's record in localStorage with a stamp, swept
              after an hour; the callback taken at load, before any other request) and the
              token's revoke (keepalive, once more without on refusal)
-src/view/    the canvas renderer and the picture's downscaled copies
+src/view/    the canvas renderer, the picture's downscaled copies, and the 3D surface (three3d.ts,
+             three.js, in a chunk of its own fetched only when a 3D map opens)
 src/ui/      the map view, the home's rows and cards, the one pointer mode, small DOM helpers
 src/app.ts   the pages: the home, a world's maps, an element's maps, a map; the sign-in's life
              (held by the reader and the world's id, ended once, revoked when the page is left)
@@ -82,6 +84,8 @@ npm run walk:look     # the page against the real worlds, screenshots in .scratc
 ```
 
 The played walk also plays what the public worlds do not hold: a read whose body stalls, a Pin and a Marker far past their map, a map with no written size, a name of 3,000 characters, a stranger's markup as names. Its sign-in part serves the build as maps.onlyworlds.com under the host's own rules (`walk/host.mjs`, which the walks' local server uses too) and plays OnlyWorlds' sign-in: the consent page, the exchange, the account's worlds, reads on the token, the revoke, a sign-in that ends, a member of forty worlds, Back, a reload, and leaving the page.
+
+The played walk's 3D sections read the WebGL canvas through screenshots (`walk/png.mjs`): the ground drawn and the right way up (against the flat view and its mirror), a buried Pin drawn and pressed, a turn that selects nothing, Flat and back, the 3D code blocked and WebGL refused. `node walk/chunks.mjs` builds once more and fails if any of three.js reaches the page's first chunk.
 
 `node walk/demos.mjs` writes the demo worlds' list again from keyless reads, when their maps change.
 
