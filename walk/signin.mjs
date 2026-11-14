@@ -291,7 +291,7 @@ const settled = (page) => page.waitForFunction(() => !window.__old && !!window._
     const cards = await page.$$eval('.demos .world-row', (rows) => rows.map((r) => [...r.querySelectorAll('.cards .map-card')].map((c) => c.querySelector('.card-name').textContent + '/' + (c.querySelector('.card-kind')?.textContent ?? ''))));
     check(`${L}: Moppetopia's row is its three maps, top maps first, then All 3 maps`, cards[0].join('|') === 'Moppetopia Space Map/a picture|Moppetopia: layout/a layout · 3D|MoppetopiaMap/a picture|All 3 maps/every map, by name', cards[0].join('|'));
     check(`${L}: Sikelia's row is its top maps first, six cards, then All 214 maps`, cards[1].length === 7 && cards[1][0] === 'Sikelia/a picture' && cards[1][1].startsWith('Sikelia: layout/') && cards[1][6] === 'All 214 maps/every map, by name', cards[1].join('|'));
-    check(`${L}: every card has its kind's mark`, (await page.locator('.demos .map-card:not(.all) svg.mark').count()) === (await page.locator('.demos .map-card:not(.all)').count()));
+    check(`${L}: every card has its kind's mark`, (await page.locator('.demos .map-card:not(.all) svg.mark:not(.mark-big)').count()) === (await page.locator('.demos .map-card:not(.all)').count()));
     check(`${L}: nothing is read from OnlyWorlds`, keel.calls.length === 0, keel.calls.map((c) => c.path).join(', '));
     check(`${L}: no pictures on the home`, (await page.locator('.home img').count()) === 0);
     check(`${L}: Sign in with OnlyWorlds is offered on the registered origin, with the id and the key`, (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 1 && (await page.locator('#world-id').count()) === 1 && (await page.locator('#world-key').count()) === 1);
@@ -351,6 +351,12 @@ const settled = (page) => page.waitForFunction(() => !window.__old && !!window._
     check(`${L}: the person's worlds, owned then joined, each A to Z`, (await mineNames(page)).join('|') === 'beta|Moppetopia|Saltmere Coast|Alpha Shared|Old Guild', (await mineNames(page)).join('|'));
     const roles = await page.locator('.mine .world-role').allTextContents();
     check(`${L}: each row says what the world is to them`, roles.join('|') === 'yours|yours|yours|a member (contributor)|a member (guest)', roles.join('|'));
+    // A row is read when it comes into view (section D holds that rule); since the cards' picture
+    // boxes, five rows no longer fit one window, so each is brought into view in turn.
+    for (const r of await page.locator('.mine .world-row').all()) {
+      await r.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(150);
+    }
     await page.waitForFunction(() => document.querySelectorAll('.mine .world-row .cards:not([hidden]), .mine .world-row.folded, .mine .world-status.failure').length >= 5, null, { timeout: 15_000 });
     const rows = await page.$$eval('.mine .world-row', (els) => els.map((e) => ({ name: e.querySelector('.world-title-name').textContent, folded: e.classList.contains('folded'), status: e.querySelector('.world-status:not([hidden])')?.textContent ?? '', cards: [...e.querySelectorAll('.card-name')].map((c) => c.textContent) })));
     const row = (n) => rows.find((r) => r.name === n);

@@ -166,8 +166,21 @@ for (const [vp, opts] of [
     unplayed.push(k);
     return route.fulfill(json(599, { error: { code: 'unplayed', message: 'not in the fixtures' } }));
   });
+  // The media host's reads in order. A small copy (the host's resizing under /cdn-cgi/image/) is
+  // played with the recorded Moppetopia picture's bytes, or answers the host's 404 when its key is in
+  // smallMiss.
+  const mediaSent = [];
+  const smallMiss = new Set();
   await ctx.route('https://media.onlyworlds.com/**', async (route) => {
-    const m = fx.media[route.request().url()];
+    const url = route.request().url();
+    mediaSent.push(url);
+    if (url.startsWith('https://media.onlyworlds.com/cdn-cgi/image/')) {
+      const key = url.replace(/^https:\/\/media\.onlyworlds\.com\/cdn-cgi\/image\/[^/]*\//, '');
+      const m = fx.media[PICTURE];
+      if (smallMiss.has(key) || !m) return route.fulfill({ status: 404, contentType: 'text/plain', body: 'ERROR 9404' });
+      return route.fulfill({ status: 200, contentType: m.type, headers: { 'access-control-allow-origin': '*' }, body: readFileSync(`.scratch/fixtures/media/${m.file}`) });
+    }
+    const m = fx.media[url];
     if (!m) return route.fulfill({ status: 404, body: '' });
     return route.fulfill({ status: 200, contentType: m.type, headers: { 'access-control-allow-origin': '*' }, body: readFileSync(`.scratch/fixtures/media/${m.file}`) });
   });
@@ -245,6 +258,48 @@ for (const [vp, opts] of [
     check(`${vp} the home shows the three demo worlds as rows of map cards`, names.length === 3 && (await page.locator('.demos .map-card').count()) >= 10, names.join('|'));
     check(`${vp} the stranger's home reads nothing from OnlyWorlds`, sent.length === n0, sent.slice(n0).join(', '));
     check(`${vp} Sign in is offered only on the registered origin`, (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 0 && (await page.locator('#world-id').count()) === 1);
+    // Pictures: every picture card shows the media host's small copy, one width, and nothing else.
+    const cardsNow = (pg = page) => pg.evaluate(() => [...document.querySelectorAll('.demos .map-card:not(.all)')].map((a) => ({
+      name: a.querySelector('.card-name')?.textContent ?? '',
+      kind: a.querySelector('.card-kind')?.textContent ?? '',
+      src: a.querySelector('.card-pic img')?.getAttribute('src') ?? null,
+      alt: a.querySelector('.card-pic img')?.getAttribute('alt'),
+      lazy: a.querySelector('.card-pic img')?.getAttribute('loading'),
+      hidden: a.querySelector('.card-pic')?.getAttribute('aria-hidden'),
+      loaded: (() => { const i = a.querySelector('.card-pic img'); return i ? i.complete && i.naturalWidth > 0 : null; })(),
+      text: a.textContent,
+      h: a.querySelector('.card-pic')?.getBoundingClientRect().height ?? 0,
+      big: !!a.querySelector('.card-pic .mark-big'),
+      cardH: a.getBoundingClientRect().height,
+    })));
+    const SMALL = 'https://media.onlyworlds.com/cdn-cgi/image/width=480,format=auto/';
+    for (const row of await page.locator('.demos .cards').all()) await row.evaluate((el) => { el.scrollIntoView(); el.scrollLeft = el.scrollWidth; });
+    await page.waitForFunction(() => [...document.querySelectorAll('.demos .card-pic img')].every((i) => i.complete), null, { timeout: 15_000 }).catch(() => {});
+    let cards = await cardsNow();
+    const pics = cards.filter((c) => c.kind === 'a picture');
+    check(`${vp} every demo picture card shows its small copy, and no layout or plan card shows one`, pics.length === 8 && pics.every((c) => c.src?.startsWith(SMALL) && c.src.slice(SMALL.length).startsWith('worlds/')) && cards.filter((c) => c.kind !== 'a picture').every((c) => c.src === null && c.big && Math.abs(c.h - pics[0].h) < 1), `${pics.length} picture cards; ${cards.map((c) => `${c.kind}:${c.src ? c.src.slice(0, 60) : '-'}`).join(' | ')}`);
+    check(`${vp} the small copies load, and the box keeps a 3:2 height`, pics.every((c) => c.loaded === true && c.h > 60), pics.map((c) => `${c.name} ${c.loaded} ${Math.round(c.h)}`).join(', '));
+    check(`${vp} a picture is decoration: no alt text, hidden from assistive technology, read lazily, no text added to the card`, pics.every((c) => c.alt === '' && c.hidden === 'true' && c.lazy === 'lazy' && c.text === `${c.name}${c.kind}`) && (await page.locator('.demos .cards').getByRole('img').count()) === 0, JSON.stringify(pics[0]));
+    const homeMedia = mediaSent.slice();
+    check(`${vp} the home reads only small copies from media, never a picture whole`, homeMedia.length > 0 && homeMedia.every((u) => u.startsWith(SMALL)), homeMedia.filter((u) => !u.startsWith(SMALL)).join(', ') || `${homeMedia.length} reads`);
+    check(`${vp} the pictures read nothing from OnlyWorlds`, sent.length === n0, sent.slice(n0).join(', '));
+    await snap('home-pictures');
+    // A small copy the host cannot make (its 404, err 9404): that card is as it was, the others keep theirs.
+    // A page of its own, so no image cache of the first page can answer for the host.
+    smallMiss.add('worlds/blood-meridian/itinerary-base-1849.webp');
+    const missPage = await ctx.newPage();
+    const n1 = mediaSent.length;
+    await missPage.goto(`${site.url}/`);
+    await missPage.waitForSelector('.demos .world-row');
+    for (const row of await missPage.locator('.demos .cards').all()) await row.evaluate((el) => { el.scrollIntoView(); el.scrollLeft = el.scrollWidth; });
+    await missPage.waitForFunction(() => [...document.querySelectorAll('.demos .card-pic img')].every((i) => i.complete), null, { timeout: 15_000 }).catch(() => {});
+    await missPage.waitForTimeout(300);
+    cards = await cardsNow(missPage);
+    const missed = cards.find((c) => c.name === 'The itinerary 1849-50');
+    const missRead = mediaSent.slice(n1).some((u) => u.endsWith('/itinerary-base-1849.webp'));
+    check(`${vp} a small copy that fails gives way to the kind's mark in the same box, the card's height and text kept`, missRead && missed && missed.src === null && missed.big === true && Math.abs(missed.h - pics[0].h) < 1 && missed.text === `${missed.name}${missed.kind}` && cards.filter((c) => c.kind === 'a picture' && c !== missed).every((c) => c.loaded === true), `read ${missRead}; ${JSON.stringify(missed)}`);
+    smallMiss.clear();
+    await missPage.close();
     await snap('home');
   });
 

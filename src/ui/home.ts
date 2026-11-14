@@ -1,7 +1,7 @@
 // The home's pieces: a world's row (its name, what it is to the person, its map cards in a row that
 // scrolls sideways inside itself) and the cards. Names are text nodes only; the kind's mark is drawn
 // here, never from a served value.
-import type { MapCard } from '../core/home';
+import { smallPicture, type MapCard } from '../core/home';
 import type { MapKind } from '../core/kinds';
 import { clear, h } from './dom';
 
@@ -28,10 +28,34 @@ export function kindMark(kind: MapKind): SVGElement {
   return s;
 }
 
-/** A map's card: its mark, its name (two lines at most, the whole name in its title) and its kind. */
+/** The kind's mark, large, for a card's picture box when there is no picture to show. */
+function bigMark(kind: MapKind): SVGElement {
+  const m = kindMark(kind);
+  m.setAttribute('width', '40');
+  m.setAttribute('height', '40');
+  m.classList.add('mark-big');
+  return m;
+}
+
+/**
+ * A map's card: a picture box, its mark, its name (two lines at most, the whole name in its title)
+ * and its kind. The box holds the media host's small copy for a picture card, else the kind's mark
+ * drawn large, so every card in a row has the same box. The picture is decoration (the name is the
+ * card's text): no alt text, read lazily, and on any failure the mark takes its place in the same
+ * box, with nothing said and nothing retried.
+ */
 export function mapCardBody(card: MapCard): Node[] {
   const name = h('span', { class: 'card-name', title: card.name }, card.name);
-  return [kindMark(card.kind), name, h('span', { class: 'card-kind' }, card.words)];
+  const body: Node[] = [kindMark(card.kind), name, h('span', { class: 'card-kind' }, card.words)];
+  const box = h('span', { class: 'card-pic', 'aria-hidden': 'true' });
+  const small = card.kind === 'picture' ? smallPicture(card.picture) : null;
+  if (small) {
+    const img = h('img', { alt: '', loading: 'lazy', decoding: 'async', width: '480', height: '320', draggable: 'false' });
+    img.addEventListener('error', () => img.replaceWith(bigMark(card.kind)), { once: true });
+    img.src = small;
+    box.append(img);
+  } else box.append(bigMark(card.kind));
+  return [box, ...body];
 }
 
 export function allCardText(total: number): string {

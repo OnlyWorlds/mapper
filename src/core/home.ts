@@ -1,6 +1,6 @@
 // The home's pure part: which of a world's maps its row shows, in what order, and what a world on
-// the account's list is to the person. No pictures in this version: a card is the map's name, its
-// kind in words and a small mark for the kind.
+// the account's list is to the person. A card is the map's name, its kind in words and a small mark
+// for the kind; a picture card also carries its picture's address, drawn only as media's small copy.
 import { simpleCaseFold, type OwAccountWorld } from '@onlyworlds/sdk';
 import { readMap, type MapKind } from './kinds';
 import { byName, isId, linkId, whole } from './rows';
@@ -16,6 +16,39 @@ export interface MapCard {
   kind: MapKind;
   /** The kind in words, as the maps page says it. */
   words: string;
+  /** A picture card's picture address (`https:`), else null; the home draws only `smallPicture` of it. */
+  picture: string | null;
+}
+
+/** The media host, the one host whose pictures have a small copy. */
+export const MEDIA_ORIGIN = 'https://media.onlyworlds.com';
+/** The small copy's one option set: one width (a card's 2x), so the host's count of copies stays small. */
+export const SMALL_OPTIONS = 'width=480,format=auto';
+
+/**
+ * The small copy of a picture on the media host, or null: only `https://media.onlyworlds.com/<path>`
+ * with no credentials, port, query or fragment, and a path not already under `/cdn-cgi/`. Never the
+ * picture itself.
+ */
+export function smallPicture(url: string | null | undefined): string | null {
+  if (typeof url !== 'string' || url.includes('?') || url.includes('#')) return null;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.origin !== MEDIA_ORIGIN || u.username || u.password || u.port || u.search || u.hash) return null;
+  const path = u.pathname;
+  // The host's own paths are refused however they are spelled: decoded, empty segments collapsed.
+  let plain: string;
+  try {
+    plain = decodeURIComponent(path).replace(/[/\\]+/g, '/');
+  } catch {
+    return null;
+  }
+  if (plain === '/' || /^\/cdn-cgi(\/|$)/i.test(plain)) return null;
+  return `${MEDIA_ORIGIN}/cdn-cgi/image/${SMALL_OPTIONS}${path}`;
 }
 
 export interface HomeRow {
@@ -47,7 +80,7 @@ export function homeRow(maps: readonly Row[], limit = HOME_CARDS): HomeRow {
     .slice(0, limit)
     .map((m) => {
       const r = readMap(m, served);
-      return { id: r.id, name: r.name, kind: r.kind, words: r.words };
+      return { id: r.id, name: r.name, kind: r.kind, words: r.words, picture: r.kind === 'picture' ? r.picture : null };
     });
   return { cards, total: served.length };
 }

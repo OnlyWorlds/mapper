@@ -162,7 +162,8 @@ label { font-weight: 600; font-size: 0.95rem; }
 .who p { margin: 0; }
 .mine .hint, .ways .hint { max-width: 42rem; }
 .world-row { margin: 0.9rem 0 1.1rem; min-width: 0; }
-.world-row.pending { min-height: 9.5rem; }
+/* A drawn row with its picture boxes measures 16 to 17.5rem at a desk, 15.3 to 16.7rem on a phone (S605). */
+.world-row.pending { min-height: 16rem; }
 .world-head { display: flex; align-items: baseline; gap: 0.15rem 0.6rem; flex-wrap: wrap; }
 .world-title { margin: 0; font-size: 1rem; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 .world-role { color: var(--muted); font-size: 0.85rem; }
@@ -175,6 +176,11 @@ label { font-weight: 600; font-size: 0.95rem; }
 .map-card { display: flex; flex-direction: column; gap: 0.35rem; width: 100%; min-width: 0; min-height: 6.4rem; padding: 0.7rem 0.8rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); text-decoration: none; }
 .map-card:hover { border-color: var(--muted); }
 .map-card .mark { color: var(--accent); flex: none; }
+/* A card's picture box across its top edge, a fixed 3:2 for every card, so a row stays level and nothing
+   moves when a picture lands or fails: the small copy, or the kind's mark drawn large. */
+.card-pic { position: relative; display: grid; place-items: center; flex: none; aspect-ratio: 3 / 2; margin: -0.7rem -0.8rem 0.15rem; overflow: hidden; border-radius: 7px 7px 0 0; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.card-pic img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
+.card-pic .mark-big { color: var(--muted); opacity: 0.55; }
 .card-name { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .card-kind { color: var(--muted); font-size: 0.85rem; margin-top: auto; }
 .map-card.all { background: var(--surface-2); border-style: dashed; justify-content: center; }
@@ -205,4 +211,6 @@ button.signin:hover { border-color: var(--text); }
   /* Two and a half cards in a row: the half is the hint that the row goes on. */
   .cards > li { flex-basis: calc((100% - 2 * 0.6rem) / 2.5); }
   .map-card { padding: 0.6rem 0.65rem; min-height: 6rem; }
+  .card-pic { margin: -0.6rem -0.65rem 0.15rem; }
+  .world-row.pending { min-height: 15.3rem; }
 }
