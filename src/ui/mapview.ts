@@ -11,6 +11,7 @@ import { mountWaymark } from '@onlyworlds/sdk/waymark';
 import type { AddressWriter } from '../core/address';
 import { atOf, cameraFromAt, centreOn, fit, limitsFor, panBy, toMap, toScreen, zoomAt, type At, type Camera, type View } from '../core/camera';
 import { pick } from '../core/hit';
+import { LAYOUT_METHOD } from '../core/links3d';
 import { pick3d } from '../core/hit3d';
 import { linesAlwaysOn, type MapReading } from '../core/kinds';
 import { placeLabels, type Placed } from '../core/labels';
@@ -262,8 +263,8 @@ export class MapView implements ModeHost {
     return this.state3d === 'on' && this.surface !== null;
   }
 
-  private frame3(): { groundZ: number; depth: number } {
-    return { groundZ: this.reading.groundZ, depth: this.reading.depth ?? 0 };
+  private frame3(): { groundZ: number; depth: number; stems: boolean } {
+    return { groundZ: this.reading.groundZ, depth: this.reading.depth ?? 0, stems: this.reading.layout !== LAYOUT_METHOD };
   }
 
   private async start3d(): Promise<void> {
@@ -1354,9 +1355,9 @@ export class MapView implements ModeHost {
   }
 
   /** The 3D camera's place and whether the ground's picture is on its plane (for a walk). */
-  walk3d(): { cam: number[] | null; picture: boolean; draws: number } {
+  walk3d(): { cam: number[] | null; picture: boolean; draws: number; stems: number } {
     const s = this.surface;
-    return { cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null, picture: !!s?.drewPicture, draws: s?.draws ?? 0 };
+    return { cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null, picture: !!s?.drewPicture, draws: s?.draws ?? 0, stems: s?.stemCount ?? 0 };
   }
 
   /** Where a Pin item stands on screen, in client pixels, in whichever view is drawn (for a walk). */

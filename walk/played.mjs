@@ -492,6 +492,7 @@ for (const [vp, opts] of [
     await page.waitForTimeout(400);
     let v = await v3();
     check(`${vp} 3D: one WebGL canvas, the ground's picture on its plane`, v.canvases === 1 && v.made === 1 && v.picture === true, JSON.stringify(v));
+    check(`${vp} 3D: a saved layout's Pins keep their stems to the ground`, v.stems > 0, JSON.stringify(v));
     const shotBuf = await page.locator('canvas.surface-3d').screenshot();
     const px = colourStats(decodePng(shotBuf));
     check(`${vp} 3D: the canvas holds a drawing (colours, ground)`, px.colours > 60 && px.unlike > 0.15, JSON.stringify(px));

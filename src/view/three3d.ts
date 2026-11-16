@@ -55,6 +55,11 @@ export interface Frame3D {
   groundZ: number;
   /** The Map's depth: the frame's box is this tall. */
   depth: number;
+  /**
+   * Whether each Pin has a stem to the ground's height. A `by-links-3d` layout has none: its third
+   * axis is the method's, not a height above a ground, and thousands of stems hid the Pins below.
+   */
+  stems: boolean;
 }
 
 const PIN_PX = 9;
@@ -136,7 +141,7 @@ export class Surface3D implements Projector {
   private controls: OrbitControls;
   private view: View = { w: 1, h: 1 };
   private scene: Scene | null = null;
-  private frame3: Frame3D = { groundZ: 0, depth: 0 };
+  private frame3: Frame3D = { groundZ: 0, depth: 0, stems: true };
   private textures = { dot: roundTexture(null), ring: roundTexture(0.3) };
   /** What the list built: disposed and made again only when the list or the theme changes. */
   private built: { scene: Scene; theme: Theme; objects: (Mesh | LineSegments | Points)[] } | null = null;
@@ -151,6 +156,8 @@ export class Surface3D implements Projector {
   draws = 0;
   lastDrawMs = 0;
   drewPicture = false;
+  /** How many stems the last build drew (for a walk). */
+  stemCount = 0;
   /** Called when the ground's picture came without CORS and is not drawn in 3D. */
   onGroundRefused: (() => void) | null = null;
 
@@ -369,7 +376,8 @@ export class Surface3D implements Projector {
     // Stems from each Pin down (or up) to the ground's height, so a height reads.
     const pins = scene.items.filter((it): it is PinItem => it.kind === 'pin');
     const stems: number[] = [];
-    for (const p of pins) if (p.z !== gz) stems.push(p.x, p.y, p.z, p.x, p.y, gz);
+    if (this.frame3.stems) for (const p of pins) if (p.z !== gz) stems.push(p.x, p.y, p.z, p.x, p.y, gz);
+    this.stemCount = stems.length / 6;
     if (stems.length) {
       const l = css(theme.line);
       objects.push(Object.assign(new LineSegments(segmentsGeometry(stems), new LineBasicMaterial({ color: l.color, transparent: true, opacity: Math.max(0.12, l.alpha * 0.4) })), { userData: { kind: 'pin' } }));
