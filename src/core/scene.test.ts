@@ -154,3 +154,51 @@ describe('the slice', () => {
     expect(lay.pins).toHaveLength(2);
   });
 });
+
+describe('the frame of a size written as 0 or below', () => {
+  // The map-space reading answers a written size as written; the drawing cannot use one that is not above 0.
+  const withSize = (width: number, height: number, picture: boolean) => {
+    const w = world();
+    w.maps = w.maps.map((m) => (m.id === MAP ? { ...m, width, height, image_url: picture ? m.image_url : '' } : m));
+    return storeOf(w);
+  };
+  for (const width of [0, -100]) {
+    it(`width ${width} with no picture: measured from its points`, () => {
+      const scene = build(input(withSize(width, 800, false), MAP), new GraphCache());
+      expect(scene.frame).toEqual({ w: 900, h: 800, from: 'points' });
+    });
+    it(`width ${width} with a picture: the picture's size once it is read`, () => {
+      const i = { ...input(withSize(width, 800, true), MAP), pictureSize: { w: 40, h: 30 } };
+      expect(build(i, new GraphCache()).frame).toEqual({ w: 40, h: 30, from: 'picture' });
+    });
+  }
+  it('a written size above 0 is still the frame', () => {
+    expect(build(input(withSize(1000, 800, true), MAP), new GraphCache()).frame).toEqual({ w: 1000, h: 800, from: 'written' });
+  });
+});
+
+describe('a half-written size and a ground written below 0 (the code gate)', () => {
+  const mapWith = (patch: Record<string, unknown>) => {
+    const w = world();
+    w.maps = w.maps.map((m) => (m.id === MAP ? { ...m, image_url: '', ...patch } : m));
+    return storeOf(w);
+  };
+  it('width 0 beside a missing height: both measured from the points', () => {
+    const s = mapWith({ width: 0, height: undefined });
+    expect(build(input(s, MAP), new GraphCache()).frame).toEqual({ w: 900, h: 700, from: 'points' });
+  });
+  it('a missing width beside height -5: both measured from the points', () => {
+    const s = mapWith({ width: undefined, height: -5 });
+    expect(build(input(s, MAP), new GraphCache()).frame).toEqual({ w: 900, h: 700, from: 'points' });
+  });
+  it('a written width above 0 beside a missing height keeps its width (gate 2)', () => {
+    const s = mapWith({ width: 800, height: undefined });
+    expect(build(input(s, MAP), new GraphCache()).frame).toEqual({ w: 800, h: 700, from: 'points' });
+  });
+  it('a ground whose written size is below 0 draws no picture of it', () => {
+    const w = world();
+    w.maps = w.maps.map((m) => (m.id === MAP ? { ...m, width: -50, height: -50 } : m));
+    const ids = build(input(storeOf(w), LAYOUT), new GraphCache()).items.map((i) => i.id);
+    expect(ids).not.toContain(`picture:${MAP}`);
+  });
+});

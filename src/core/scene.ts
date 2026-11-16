@@ -193,10 +193,27 @@ export function build(input: BuildInput, cache: GraphCache): Scene {
   const ms = mapSpace([...slice.maps, ...slice.pins, ...slice.markers, ...slice.zones]);
   const own = ms.maps.find((m) => m.id === slice.mapId) ?? null;
 
+  // A written size is the frame only when both numbers are above 0. The map-space reading answers a written size as
+  // written, 0 and below included, so such a Map is drawn as one with no size: its picture's size, else its points'
+  // extent (measured here, since the reading answers the written number and measures only a missing one).
   let frame: Frame;
-  if (reading.width !== null && reading.height !== null) frame = { w: reading.width, h: reading.height, from: 'written' };
+  const above0 = (n: number | null): n is number => n !== null && n > 0;
+  // Always measured here, both slots: the reading keeps a written slot as written beside a measured missing one.
+  const points = (): { w: number; h: number } | null => {
+    let w = -Infinity, h = -Infinity;
+    for (const p of ms.pins) if (p.map === slice.mapId) { w = Math.max(w, p.x); h = Math.max(h, p.y); }
+    for (const o of ms.zones) if (o.map === slice.mapId) for (const [x, y] of o.points) { w = Math.max(w, x); h = Math.max(h, y); }
+    return Number.isFinite(w) && Number.isFinite(h) ? { w, h } : null;
+  };
+  const measured = above0(reading.width) && above0(reading.height) ? null : points();
+  if (above0(reading.width) && above0(reading.height)) frame = { w: reading.width, h: reading.height, from: 'written' };
   else if (input.pictureSize) frame = { w: input.pictureSize.w, h: input.pictureSize.h, from: 'picture' };
-  else if (own && own.width !== null && own.height !== null) frame = { w: Math.max(1, own.width), h: Math.max(1, own.height), from: 'points' };
+  // Per slot: a written number above 0 stays, a missing one or one not above 0 is measured (as the reading measures a missing slot).
+  else if (measured) frame = {
+    w: above0(reading.width) ? reading.width : Math.max(1, measured.w),
+    h: above0(reading.height) ? reading.height : Math.max(1, measured.h),
+    from: 'points',
+  };
   else frame = { w: 1000, h: 1000, from: 'none' };
 
   const items: Item[] = [];
@@ -208,7 +225,7 @@ export function build(input: BuildInput, cache: GraphCache): Scene {
     const g = ms.maps.find((m) => m.id === slice.groundId);
     const gw = ground.width ?? g?.width ?? null;
     const gh = ground.height ?? g?.height ?? null;
-    if (ground.picture && gw && gh) {
+    if (ground.picture && gw && gh && gw > 0 && gh > 0) { // gw && gh: null too
       const [ox, oy] = reading.groundOffset;
       items.push({ id: `picture:${ground.id}`, kind: 'picture', element: null, source: ground.id, offset: [ox, oy], style: 'picture', url: ground.picture, rect: [ox, oy, gw, gh] } satisfies PictureItem);
     }

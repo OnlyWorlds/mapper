@@ -1003,8 +1003,12 @@ export class MapView implements ModeHost {
     if (s) {
       const o = outLine(s);
       if (o) line(o, 'out');
-      if (s.frame.from === 'picture') line("This map has no written size; it takes its picture's size.");
-      else if (s.frame.from === 'points') line('This map has no written size; its frame is measured from its points.');
+      // A size written as 0 or below is said as such: the file holds it, the drawing cannot use it.
+      const notAbove0 = [this.reading.width, this.reading.height].some((n) => n !== null && n <= 0);
+      const lead = notAbove0 ? 'This map\'s written size is not above 0' : 'This map has no written size';
+      if (s.frame.from === 'picture') line(`${lead}; it takes its picture's size.`);
+      else if (s.frame.from === 'points') line(`${lead}; its frame is measured from its points.`);
+      else if (s.frame.from === 'none' && notAbove0) line(`${lead}; it is drawn on a stand-in frame.`);
       if (this.reading.depth !== null && s.zMax !== null && s.zMax > this.reading.depth) line(`Some points stand higher than the map's depth of ${this.reading.depth}; they are drawn where written.`);
     }
     for (const n of this.status.notes) line(n, 'note');
