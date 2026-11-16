@@ -16,6 +16,7 @@ import { elementTypeOf, isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
 import { bodiesToRead, chunks, sliceFor, zonesToRead } from './core/slice';
 import { WorldStore } from './core/store';
+import { ceilingWords, COUNT_CEILING, COUNT_FAILED_WORDS, COUNT_REFUSED_WORDS, counted, COUNTING_WORDS, countPlan, countUnplaced, unplacedWords } from './core/unplaced';
 import type { ElementInfo, Row } from './core/types';
 import { plural, progressLine, type ReadStep } from './core/words';
 import { Api, asFailure, ENDED_LINE, failureWords, ReadFailure, ReadQueue } from './net/api';
@@ -44,6 +45,8 @@ interface WorldState {
   /** Why the counts are left out, when they are. */
   countsNote: string | null;
   graphs: GraphCache;
+  /** Whole types read for the unplaced count, by type: kept apart from the store, so the count never moves the drawing. */
+  countRows: Map<string, Row[]>;
   elements: Map<string, { body: Row | null; type: string | null; pins: Row[]; longWay: boolean }>;
   onWait: (line: string | null) => void;
 }
@@ -660,7 +663,7 @@ export class App {
       }
     }
     const ws: WorldState = {
-      id, reader, api, store: new WorldStore(), meta, rung, account, done: new Set(), pinCounts: null, countsNote: null,
+      id, reader, api, store: new WorldStore(), meta, rung, account, done: new Set(), pinCounts: null, countsNote: null, countRows: new Map(),
       graphs: new GraphCache(), elements: new Map(), onWait: () => {},
     };
     // The Maps list the home read on the token is handed over: a press from the home reads it once.
@@ -997,7 +1000,7 @@ export class App {
       { name: 'Zones', state: 'waiting', calls: 0 },
       { name: 'elements', state: 'waiting', calls: 0 },
     ];
-    const status: MapStatus = { progress: null, long: null, wait: null, failure: null, drawing: null, notes };
+    const status: MapStatus = { progress: null, long: null, wait: null, failure: null, drawing: null, notes, count: null };
     const push = () => {
       status.progress = progressLine(steps);
       if (gen === this.gen) mv.setStatus({ ...status });
@@ -1008,6 +1011,55 @@ export class App {
     };
     const markerMaps = [mapId, ...(ground ? [ground.id] : [])];
     let complete = false;
+    let countStarted = false;
+    // What a `by-kind` layout map does not place (the default layouts page, `unplaced`): after the Map
+    // is drawn, outside its reads, with its own line; a failure here is never the Map's.
+    const runCount = async (placed: string[]): Promise<void> => {
+      const plan = countPlan(ws.meta.counts?.types as Record<string, unknown> | undefined);
+      if (plan.total !== null && plan.total > COUNT_CEILING) {
+        status.count = { text: ceilingWords(), cls: 'note' };
+        push();
+        return;
+      }
+      status.count = { text: COUNTING_WORDS, cls: 'progress' };
+      push();
+      let calls = 0;
+      const t0 = performance.now();
+      const longTimer = window.setInterval(() => {
+        if (gen !== this.gen || performance.now() - t0 <= 4000) return;
+        const text = `${COUNTING_WORDS} This takes a while: at most ${ONE_READ.toLocaleString('en-US')} rows a read, one read at a time (${plural(calls, 'read')} so far).`;
+        if (status.count?.text === text) return;
+        status.count = { text, cls: 'progress' };
+        push();
+      }, 1000);
+      try {
+        for (const type of plan.types) {
+          if (ws.countRows.has(type)) continue;
+          const rows = await ws.api.all(type, undefined, () => {
+            calls++;
+          }, undefined, signal);
+          ws.countRows.set(type, rows);
+        }
+      } catch (err) {
+        clearInterval(longTimer);
+        if (gen !== this.gen) return;
+        const f = asFailure(err);
+        status.count = f.kind === 'ended' || f.kind === 'stopped' ? null : { text: `${COUNT_FAILED_WORDS} ${failureWords(f, 'elements')}`, cls: 'failure', retry: () => void runCount(placed) };
+        push();
+        return;
+      }
+      clearInterval(longTimer);
+      if (gen !== this.gen) return;
+      const rows = new Map<string, Row[]>();
+      for (const t of plan.types) rows.set(t, ws.countRows.get(t)!);
+      try {
+        status.count = { text: unplacedWords(countUnplaced(rows, ws.rung, placed)), cls: 'note' };
+      } catch (err) {
+        console.error(err);
+        status.count = { text: COUNT_REFUSED_WORDS, cls: 'failure' };
+      }
+      push();
+    };
     // A builder or drawing error is not a read's: it is said as the map's, kept for the console, and
     // never fails the read that landed (its Try again would only repeat it).
     const derive = () => {
@@ -1019,6 +1071,10 @@ export class App {
         });
         const scene: Scene = build({ slice, reading, ground, rung: ws.rung, complete, pictureSize, versionOf: (id) => ws.store.version(id) }, ws.graphs);
         mv.setScene(scene);
+        if (scene.complete && !countStarted && counted(reading.layout)) {
+          countStarted = true;
+          runCount(scene.placed).catch((err) => console.error(err));
+        }
         if (status.drawing) {
           status.drawing = null;
           push();

@@ -44,6 +44,8 @@ export interface MapStatus {
   /** The map could not be drawn from what was read (a builder error, not a read's): no Try again. */
   drawing: string | null;
   notes: string[];
+  /** What a `by-kind` layout map does not place: its own line, never the map's failure (unplaced.ts's words). */
+  count: { text: string; cls: string; retry?: () => void } | null;
 }
 
 interface Stats {
@@ -139,7 +141,7 @@ export class MapView implements ModeHost {
   private lastMove = 0;
   private lastFrameAt = 0;
   private listOpen = false;
-  private status: MapStatus = { progress: null, long: null, wait: null, failure: null, drawing: null, notes: [] };
+  private status: MapStatus = { progress: null, long: null, wait: null, failure: null, drawing: null, notes: [], count: null };
   private els: {
     title: HTMLElement;
     head: HTMLElement;
@@ -999,6 +1001,11 @@ export class MapView implements ModeHost {
       if (this.reading.depth !== null && s.zMax !== null && s.zMax > this.reading.depth) line(`Some points stand higher than the map's depth of ${this.reading.depth}; they are drawn where written.`);
     }
     for (const n of this.status.notes) line(n, 'note');
+    const c = this.status.count;
+    if (c) {
+      if (c.retry) box.append(h('p', { class: `${c.cls} unplaced`, role: 'alert' }, c.text + ' ', button('Try again', c.retry, { class: 'retry' })));
+      else line(c.text, `${c.cls} unplaced`);
+    }
     this.layoutChanged();
   }
 

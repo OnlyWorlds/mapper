@@ -7,6 +7,7 @@ import { Grid } from './hit';
 import type { MapReading } from './kinds';
 import { cp, byName, str } from './rows';
 import type { Slice } from './slice';
+import { placedOn } from './unplaced';
 import type { Item, LabelItem, LineEdge, LineItem, PictureItem, PinItem, Row, ZoneItem } from './types';
 
 /** Who reads: the public (keyless), the owner, or any other key, read over its served set. */
@@ -61,6 +62,8 @@ export interface Scene {
   zMax: number | null;
   /** Milliseconds the derive took. */
   ms: number;
+  /** The ids this Map's Pins stand for, from `mapSpace`'s pins (the default layouts page's `placed`). */
+  placed: string[];
 }
 
 /** A graph kept per Map until one of its rows changes. */
@@ -270,5 +273,6 @@ export function build(input: BuildInput, cache: GraphCache): Scene {
     counts: { pins: pins.length, zones: zones.length, elements: byElement.size, lines: lines.length, labels: labels.length },
     zMax: own?.z_max ?? null,
     ms: performance.now() - t0,
+    placed: placedOn(slice.mapId, ms.pins),
   };
 }
