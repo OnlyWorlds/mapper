@@ -844,7 +844,7 @@ export class App {
   // ---- the world laid out by its links in 3D, here and unsaved
 
   /** What the last press drew, for the walks: never the rows. Points are the answer's, rounded, in its own frame. */
-  links3d: { from: 'nothing' | 'kept' | 'lost'; fresh: number; nodes: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[] } | null = null;
+  links3d: { from: 'nothing' | 'kept' | 'lost'; fresh: number; nodes: number; plate: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[] } | null = null;
 
   /** The press on a world's page: offered only when the world fits the ceiling, else a line says why. */
   private layoutOffer(ws: WorldState): HTMLElement {
@@ -1018,7 +1018,7 @@ export class App {
           box = head();
           return say('failure', FAILED_LINE, tryAgain());
         }
-        this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded] };
+        this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, plate: answer.how.filter((x) => x === 'map').length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded] };
 
         // Keep the picture still for the next press: the rounded points in the answer's own frame.
         if (key && hold.state !== 'no-store') {

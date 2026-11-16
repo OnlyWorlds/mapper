@@ -25,8 +25,8 @@ const EMPTYW = '89898989-8989-7989-8989-898989898989'; // no element for this re
 const BIG = '8a8a8a8a-8a8a-7a8a-8a8a-8a8a8a8a8a8a'; // 12,001 served Characters by its counts
 const NOCOUNT = '8b8b8b8b-8b8b-7b8b-8b8b-8b8b8b8b8b8b'; // no counts served, 10,001 Characters
 const PINBIG = '8c8c8c8c-8c8c-7c8c-8c8c-8c8c8c8c8c8c'; // 20,000 Pins by its counts
-// A Map whose width is below 0 pinning three Locations: SDK 4.171.0's layout throws on it (a later
-// SDK makes such a Map no plate, and this case then expects a picture).
+// A Map whose width is below 0 pinning three Locations: since SDK 4.171.1 such a Map is no plate
+// (4.171.0 threw on it), so the picture is drawn with no element on a plate.
 const BENT = '8e8e8e8e-8e8e-7e8e-8e8e-8e8e8e8e8e8e';
 const SLOW = '8d8d8d8d-8d8d-7d8d-8d8d-8d8d8d8d8d8d'; // 2,000 Characters richly linked, for a Cancel while the layout runs
 const COAST = lid(LW, 1);
@@ -241,6 +241,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   const first = await info();
   const reads1 = wholeReads(from);
   check(`${vp} links3d the picture is drawn: one Pin per element this reader sees (11 of 12, the hidden one cut), with links`, ok1 && first?.nodes === 11 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 11 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) >= 8, JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
+  check(`${vp} links3d the world's map is the plate: its four pinned elements stand at their Pins`, first?.plate === 4, JSON.stringify({ plate: first?.plate }));
   check(`${vp} links3d a first press says "${FRESH}"`, (await heldLine()) === FRESH, String(await heldLine()));
   check(`${vp} links3d the bar names the map and its kind`, (await page.locator('.map-name').innerText()) === HEAD && (await page.locator('.kind').innerText()) === KIND, `${await page.locator('.kind').innerText()}`);
   check(`${vp} links3d the lines say Atlas saves a layout, the method may change, and when the world was read`, /Atlas saves a layout/.test(await statusText()) && /later version/.test(await statusText()) && /From the world as read at \d\d:\d\d; a reload reads it again\./.test(await statusText()), (await statusText()).slice(0, 400));
@@ -429,17 +430,26 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   }
 
   if (!phone) {
-    // 16. A layout that throws (a served Map with a width below 0, on SDK 4.171.0): its words and Try
-    // again, the error kept in the console, nothing drawn.
+    // 16. A served Map with a width below 0 is no plate: the picture is drawn, no element on a plate.
     await page.goto(`${base}/?world=${BENT}&layout=by-links-3d`);
+    await drawn();
+    const bent = await info();
+    check(`${vp} links3d a Map with a width below 0 is no plate: drawn, no element on a plate`, bent?.nodes === 3 && bent?.plate === 0 && layoutErrors.length === 0, JSON.stringify({ nodes: bent?.nodes, plate: bent?.plate, errors: layoutErrors.length }));
+
+    // 17. A layout that throws: the worker's file is played as one whose layout fails. Its words and
+    // Try again, the error kept in the console, nothing drawn; Try again lays out again.
+    const worker = '**/assets/links3d.worker-*.js';
+    await ctx.route(worker, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: "self.onmessage = () => self.postMessage({ ok: false, message: 'Error: played layout failure' });" }));
+    await page.goto(`${base}/?world=${LW}&layout=by-links-3d`);
     await waitUntil(page, () => !!document.querySelector('.links3d .failure .retry'), null, 20_000);
-    check(`${vp} links3d a layout that throws says "This world could not be laid out." with Try again, kept in the console`, (await boxText()) === 'This world could not be laid out. Try again' && (await info()) === null && layoutErrors.some((e) => /negative area/.test(e)), `${await boxText()} | ${layoutErrors.join(' | ').slice(0, 200)}`);
+    check(`${vp} links3d a layout that throws says "This world could not be laid out." with Try again, kept in the console`, (await boxText()) === 'This world could not be laid out. Try again' && (await info()) === null && layoutErrors.some((e) => /played layout failure/.test(e)), `${await boxText()} | ${layoutErrors.join(' | ').slice(0, 200)}`);
+    await ctx.unroute(worker);
     await page.locator('.links3d .failure .retry').click();
-    await waitUntil(page, () => !!document.querySelector('.links3d .failure .retry'), null, 20_000);
-    check(`${vp} links3d its Try again lays out again, and says the same while the method throws`, (await boxText()) === 'This world could not be laid out. Try again' && layoutErrors.length === 2, `${layoutErrors.length} errors`);
+    await drawn();
+    check(`${vp} links3d its Try again lays out again`, (await info())?.nodes === 11 && (await page.locator('.links3d .failure').count()) === 0, JSON.stringify({ nodes: (await info())?.nodes }));
   }
 
-  // 17. Nothing written: every request the page made was a GET, and nothing left for OnlyWorlds but reads.
+  // 18. Nothing written: every request the page made was a GET, and nothing left for OnlyWorlds but reads.
   const notGet = all.filter((r) => !r.startsWith('GET '));
   check(`${vp} links3d every request is a GET (${all.length} requests)`, notGet.length === 0, notGet.slice(0, 3).join(' | '));
   if (process.env.SHOW) for (const r of [...new Set(all.map((x) => x.replace(/\?.*$/, '')))]) console.log(`    request ${r}`);
