@@ -15,7 +15,7 @@ import { dropNonPublic, encodeHold, flatHold, holdKey, keepHold, keyHash12, read
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
 import {
   AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
-  madeUp, NO_PLATE_LINE, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
+  madeUp, NO_PLATE_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
   STOPPED_LINE, UNSAVED_LINE,
 } from './core/links3d';
 import { elementTypeOf, isId, linkId, str } from './core/rows';
@@ -145,6 +145,10 @@ export class App {
 
   /** The first route: on the callback, only after the exchange's outcome, with nothing to press meanwhile. */
   async start(callback: Promise<SignInOutcome> | null): Promise<void> {
+    // No account or key reader survives a page load (the sign-in and a key live in this page's
+    // memory only), so the 3D pictures kept for them go before anything is read.
+    // A storage that never answers holds the first route back a second at most.
+    const dropped = Promise.race([dropNonPublic(openHolds), new Promise((ok) => setTimeout(ok, 1000))]);
     if (callback) {
       this.exchanging = true;
       this.teardown();
@@ -167,6 +171,7 @@ export class App {
         this.replaceAddress('/');
       }
     }
+    await dropped;
     await this.route();
   }
 
@@ -221,6 +226,8 @@ export class App {
   pageHidden(): void {
     this.leaving = true;
     if (this.session) void revokeToken(this.session);
+    // The 3D pictures an account or a key read go with the page (tried; a reload drops them too).
+    void dropNonPublic(openHolds);
   }
 
   /** The page is shown again. Back from the back/forward cache it holds a token it revoked, so it signs out. */
@@ -502,7 +509,7 @@ export class App {
         msg.hidden = false;
         return;
       }
-      this.go({ ...this.writer.current(), world: v, map: null, element: null, type: null, at: null });
+      this.go({ ...this.writer.current(), world: v, map: null, element: null, type: null, at: null, layout: null });
     });
     const going = h('p', { class: 'said', role: 'status' });
     going.hidden = true;
@@ -890,7 +897,7 @@ export class App {
       const stopOnLeave = () => c.abort();
       leave.addEventListener('abort', stopOnLeave, { once: true });
       this.links3d = null;
-      const box = head();
+      let box = head();
       const live = () => gen === this.gen && ctl === c && !c.signal.aborted;
       const mine = () => gen === this.gen && ctl === c;
       const say = (cls: string, text: string, ...after: HTMLElement[]) => {
@@ -946,8 +953,10 @@ export class App {
           if (!live()) return stopped();
           if (got.over) return say('note ceiling3d', ceilingWords3d());
           ws.countRows.set(t, got.rows);
-          ws.readAt = Date.now();
+          ws.readAt ??= Date.now();
         }
+        // Every type may already be held whole (a by-kind map counted first): the ceiling still holds.
+        if (n > COUNT_CEILING) return say('note ceiling3d', ceilingWords3d());
 
         // The Pins, for the plate: their own read and their own ceiling.
         let pins: Row[] | null;
@@ -964,7 +973,7 @@ export class App {
             ws.store.put('pin', got.rows);
             ws.done.add('pins');
             pins = got.rows;
-            ws.readAt = Date.now();
+            ws.readAt ??= Date.now();
           }
         }
         const readAt = (ws.readAt ??= Date.now());
@@ -996,16 +1005,17 @@ export class App {
         if (!answer.ids.length) return say('note empty3d', EMPTY_LINE);
 
         const rounded = roundPoints(answer.points);
-        const from: 'nothing' | 'kept' | 'lost' = answer.heldUsed ? 'kept' : hold.state === 'lost' || answer.refused ? 'lost' : 'nothing';
+        const from = pictureFrom(answer, hold.state);
         const notes: string[] = [UNSAVED_LINE, CHANGE_LINE, readAtWords(new Date(readAt))];
         if (pins === null) notes.push(NO_PLATE_LINE);
         if (hold.state === 'no-store') notes.push(NO_STORE_LINE);
-        if (ws.reader !== 'public') notes.push('Elements marked hidden are drawn as Pins without links, as the OnlyWorlds graph rules have it.');
         let buildMs: number;
         try {
           buildMs = this.drawLayout(ws, rows, answer.ids, rounded, from === 'kept' ? keptWords(answer.fresh) : from === 'lost' ? LOST_LINE : FRESH_LINE, notes, () => void run(true));
         } catch (err) {
           console.error(err);
+          // The drawing may have cleared the page: the head comes back before the line is said.
+          box = head();
           return say('failure', FAILED_LINE, tryAgain());
         }
         this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded] };
@@ -1301,7 +1311,7 @@ export class App {
             calls++;
           }, undefined, signal);
           ws.countRows.set(type, rows);
-          ws.readAt = Date.now();
+          ws.readAt ??= Date.now();
         }
       } catch (err) {
         clearInterval(longTimer);

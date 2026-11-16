@@ -39,6 +39,15 @@ export interface Links3dAnswer {
 /** The method's four refusals of a hold (the codes are read in the worker only: refusal.ts). */
 export type HoldRefusal = 'held-not-object' | 'held-not-point' | 'held-box' | 'held-unit';
 
+/**
+ * Which picture a press drew: kept only when the hold kept something (a hold that shares no id with
+ * the answer is a fresh picture); lost when the hold could not be read or the method refused it.
+ */
+export function pictureFrom(answer: Pick<Links3dAnswer, 'heldUsed' | 'fresh' | 'ids' | 'refused'>, hold: 'held' | 'none' | 'lost' | 'no-store'): 'nothing' | 'kept' | 'lost' {
+  if (answer.heldUsed && answer.fresh < answer.ids.length) return 'kept';
+  return hold === 'lost' || answer.refused ? 'lost' : 'nothing';
+}
+
 /** Each point rounded with the SDK's own rounding, in the answer's frame (what the hold keeps). */
 export function roundPoints(points: ArrayLike<number>): Float64Array {
   const out = new Float64Array(points.length);
@@ -141,7 +150,7 @@ export function readingWords(n: number, seconds: number): string {
   return `Reading what you can see of the world: ${plural(n, 'element')} so far, ${seconds} s.`;
 }
 
-/** The running line while the worker lays it out: it counts time, and promises no speed. */
+/** The running line while the worker lays it out: the rows read (the graph may draw fewer), and time, with no promise of speed. */
 export function layingWords(n: number, seconds: number): string {
-  return `Laying out ${plural(n, 'element')} for you, ${seconds} s so far.`;
+  return `Laying out the ${plural(n, 'element')} read, ${seconds} s so far.`;
 }

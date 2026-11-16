@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeHold, dropNonPublic, encodeHold, flatHold, HOLD_BUDGET, holdKey, keepHold, keyHash12, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
+import { decodeHold, dropNonPublic, encodeHold, flatHold, HOLD_BUDGET, holdKey, isPublicKey, keepHold, keyHash12, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
 
 const W = '0199c3a1-0000-7000-8000-00000000000a';
 
@@ -129,5 +129,29 @@ describe('keeping and reading', () => {
     expect(await dropNonPublic(async () => b)).toBe(2);
     expect([...b.rows.keys()]).toEqual([pub]);
     expect(await dropNonPublic(async () => Promise.reject(new Error('x')))).toBe(0);
+  });
+
+  it('a delete that fails never keeps the others: one try per key', async () => {
+    const b = memory();
+    const keys = [holdKey(W, 'owner', { reader: 'account', login: 'a' }), holdKey(W, 'owner', { reader: 'account', login: 'b' }), holdKey(W, 'guest', { reader: 'key', hash12: '0123456789ab' })];
+    for (const k of keys) await keepHold(async () => b, encodeHold(k, ['a'], [1, 2, 3], 1));
+    const real = b.delete;
+    let tries = 0;
+    b.delete = async (k) => {
+      tries++;
+      if (k === keys[0]) throw new Error('refused');
+      return real(k);
+    };
+    expect(await dropNonPublic(async () => b)).toBe(2);
+    expect(tries).toBe(3);
+    expect([...b.rows.keys()]).toEqual([keys[0]]);
+  });
+
+  it('a public key is the public rung and the public reader, part by part', () => {
+    expect(isPublicKey(`${W}|public|public`)).toBe(true);
+    expect(isPublicKey(`${W}|guest|public`)).toBe(false);
+    expect(isPublicKey(`${W}|owner|account:x|public|public`)).toBe(false);
+    expect(isPublicKey(`${W}|owner|account:public`)).toBe(false);
+    expect(isPublicKey('public|public')).toBe(false);
   });
 });

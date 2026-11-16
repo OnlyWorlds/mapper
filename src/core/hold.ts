@@ -36,9 +36,10 @@ export function holdKey(world: string, rung: ReaderRung, who: Who): string {
   return `${world}|${rung}|${w}`;
 }
 
-/** A key's reader part is the public's: kept across a sign-out. */
+/** A key whose rung and reader are both the public's: kept across a sign-out. */
 export function isPublicKey(key: string): boolean {
-  return key.endsWith('|public|public');
+  const parts = key.split('|');
+  return parts.length === 3 && parts[1] === 'public' && parts[2] === 'public';
 }
 
 /** The first 12 hex of the SHA-256 of a pasted key: two keys never share a hold, and the key is never stored. */
@@ -132,17 +133,24 @@ export async function keepHold(open: () => Promise<HoldBackend>, value: HoldValu
 
 /** Sign-out: every hold that is not the public's is dropped (they name what an account or key read). */
 export async function dropNonPublic(open: () => Promise<HoldBackend>): Promise<number> {
+  let all: { key: string }[];
+  let b: HoldBackend;
   try {
-    const b = await open();
-    const all = await b.list();
-    let n = 0;
-    for (const h of all) {
-      if (isPublicKey(h.key)) continue;
-      await b.delete(h.key);
-      n++;
-    }
-    return n;
+    b = await open();
+    all = await b.list();
   } catch {
     return 0;
   }
+  // One try per key: a delete that fails never keeps the others.
+  let n = 0;
+  for (const h of all) {
+    if (isPublicKey(h.key)) continue;
+    try {
+      await b.delete(h.key);
+      n++;
+    } catch {
+      /* tried; the next load tries again */
+    }
+  }
+  return n;
 }

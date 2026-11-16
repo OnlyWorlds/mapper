@@ -5,7 +5,7 @@ import { readMap } from './kinds';
 import { layOut, type Links3dInput } from './layout3d';
 import {
   ceilingWords3d, CHANGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP, madeUp, newCount,
-  NO_PLATE_LINE, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_WORDS, readAtWords, readingWords, roundPoints, STOPPED_LINE, UNSAVED_LINE,
+  NO_PLATE_LINE, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_WORDS, pictureFrom, readAtWords, readingWords, roundPoints, STOPPED_LINE, UNSAVED_LINE,
 } from './links3d';
 import { holdRefusal } from './refusal';
 import { build, GraphCache } from './scene';
@@ -103,6 +103,19 @@ describe('the new count', () => {
   });
 });
 
+describe('which picture a press drew', () => {
+  const ids = ['a', 'b', 'c'];
+  it('kept only when the hold kept something', () => {
+    expect(pictureFrom({ heldUsed: true, fresh: 0, ids, refused: null }, 'held')).toBe('kept');
+    expect(pictureFrom({ heldUsed: true, fresh: 2, ids, refused: null }, 'held')).toBe('kept');
+    expect(pictureFrom({ heldUsed: true, fresh: 3, ids, refused: null }, 'held')).toBe('nothing');
+    expect(pictureFrom({ heldUsed: false, fresh: 3, ids, refused: null }, 'none')).toBe('nothing');
+    expect(pictureFrom({ heldUsed: false, fresh: 3, ids, refused: 'held-box' }, 'held')).toBe('lost');
+    expect(pictureFrom({ heldUsed: false, fresh: 3, ids, refused: null }, 'lost')).toBe('lost');
+    expect(pictureFrom({ heldUsed: false, fresh: 3, ids, refused: null }, 'no-store')).toBe('nothing');
+  });
+});
+
 describe('the hold refused', () => {
   it('reads the four codes and nothing else', () => {
     for (const code of ['held-not-object', 'held-not-point', 'held-box', 'held-unit']) expect(holdRefusal(Object.assign(new TypeError('x'), { code }))).toBe(code);
@@ -136,7 +149,7 @@ describe('the words', () => {
     expect(keptWords(1234)).toBe('Kept the picture you last saw here; 1,234 placed new.');
     expect(readAtWords(new Date(2026, 10, 16, 9, 4))).toBe('From the world as read at 09:04; a reload reads it again.');
     expect(readingWords(1, 0)).toBe('Reading what you can see of the world: 1 element so far, 0 s.');
-    expect(layingWords(2500, 3)).toBe('Laying out 2,500 elements for you, 3 s so far.');
+    expect(layingWords(2500, 3)).toBe('Laying out the 2,500 elements read, 3 s so far.');
     expect(ceilingWords3d()).toBe('This world holds more than 10,000 elements you can see, too many for the mapper to lay out here.');
     expect(HEAD).toBe('By links, in 3D (not saved)');
     expect(KIND_WORDS).toBe('a layout · 3D · not saved');

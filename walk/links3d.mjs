@@ -363,7 +363,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
 
   // 11. Cancel while the worker lays it out (2,000 richly linked elements): the worker ends, nothing drawn after.
   await page.goto(`${base}/?world=${SLOW}&layout=by-links-3d`);
-  const laying = await waitUntil(page, () => /^Laying out [\d,]+ elements for you, \d+ s so far\.$/.test(document.querySelector('.running3d')?.textContent ?? ''), null, 30_000);
+  const laying = await waitUntil(page, () => /^Laying out the [\d,]+ elements read, \d+ s so far\.$/.test(document.querySelector('.running3d')?.textContent ?? ''), null, 30_000);
   const linesAt = await page.locator('.running3d').textContent().catch(() => null);
   if (laying) await page.locator('button.cancel3d').click();
   await page.waitForTimeout(phone ? 4000 : 6000);
