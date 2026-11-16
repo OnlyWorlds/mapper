@@ -54,6 +54,41 @@ const PLAYED = {
   [BETA]: { map: [], pin: [], location: [] },
 };
 for (const w of MANY) PLAYED[w.id] = { map: [{ id: w.id.replace(/-5555-7555/, '-6666-7666'), type: 'map', name: `${w.name} chart`, width: 400, height: 300 }], pin: [], location: [] };
+/** The 3D layout's kept pictures on this device: their keys, and a planted one. */
+const holdKeys = (page) => page.evaluate(() => new Promise((ok) => {
+  const req = indexedDB.open('mapper-holds');
+  req.onerror = () => ok(null);
+  req.onsuccess = () => {
+    const d = req.result;
+    if (!d.objectStoreNames.contains('times')) {
+      d.close();
+      return ok([]);
+    }
+    const g = d.transaction('times').objectStore('times').getAllKeys();
+    g.onsuccess = () => {
+      d.close();
+      ok(g.result.map(String).sort());
+    };
+    g.onerror = () => ok(null);
+  };
+}));
+const plantHold = (page, key) => page.evaluate((k) => new Promise((ok) => {
+  const req = indexedDB.open('mapper-holds', 1);
+  req.onupgradeneeded = () => {
+    req.result.createObjectStore('points');
+    req.result.createObjectStore('times');
+  };
+  req.onsuccess = () => {
+    const d = req.result;
+    const tx = d.transaction(['points', 'times'], 'readwrite');
+    tx.objectStore('points').put({ v: 1, key: k, at: Date.now(), ids: ['x'], xyz: new Float64Array([0, 0, 0]) }, k);
+    tx.objectStore('times').put(Date.now(), k);
+    tx.oncomplete = () => {
+      d.close();
+      ok(true);
+    };
+  };
+}), key);
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const waitFor = async (pred, ms = 8000) => {
   const end = Date.now() + ms;
@@ -426,13 +461,41 @@ const settled = (page) => page.waitForFunction(() => !window.__old && !!window._
       check(`${L}: the page never scrolls sideways on a phone`, w.page <= w.vw, JSON.stringify(w));
     }
 
+    // The world laid out in 3D as the account: its picture is kept under the account's own key.
+    const ownKey = `${SALT}|owner|account:wren`;
+    const pubKey = `${M}|public|public`;
+    await page.evaluate((u) => {
+      history.pushState(null, '', u);
+      dispatchEvent(new PopStateEvent('popstate'));
+    }, `/?world=${SALT}&layout=by-links-3d`);
+    await page.waitForFunction(() => !!window.__mapper.links3d && window.__mapper.scene?.complete, null, { timeout: 30_000 });
+    await page.waitForTimeout(300);
+    await plantHold(page, pubKey);
+    const held = await holdKeys(page);
+    check(`${L}: the world laid out in 3D as the account keeps its picture under the account's key`, JSON.stringify(held) === JSON.stringify([ownKey, pubKey].sort()), JSON.stringify(held));
+    await page.evaluate(() => {
+      history.pushState(null, '', '/');
+      dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await page.waitForSelector('.mine .world-row');
+
     // Sign out: the token removed by its id with itself as the bearer, the answer the read-back.
     await page.getByRole('button', { name: 'Sign out' }).click();
     await page.waitForSelector('.said:has-text("Signed out")', { timeout: 15_000 });
+    await page.waitForTimeout(300);
+    const afterOut = await holdKeys(page);
+    check(`${L}: Sign out drops every kept 3D picture but the public's`, JSON.stringify(afterOut) === JSON.stringify([pubKey]), JSON.stringify(afterOut));
     const del = keel.calls.filter((c) => c.m === 'DELETE');
     check(`${L}: Sign out deletes the token by its id, the token the bearer, one call`, del.length === 1 && del[0].path === '/api/v2/account/tokens/tok-1' && del[0].bearer === token && !keel.calls.some((c) => c.path === '/api/v2/account/tokens/' && c.m === 'GET'));
     check(`${L}: and says it is removed, with the shared-computer line`, (await page.textContent('.said')).startsWith(SIGNED_OUT) && (await page.textContent('.said')).includes('sign out of onlyworlds.com too'));
     check(`${L}: the home is a stranger's again`, (await page.locator('.mine').count()) === 0 && (await demoNames(page)).length === 3 && (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 1);
+    // A reader's picture left on the device (a closed tab, a key) goes at the next page load.
+    await plantHold(page, ownKey);
+    await page.reload();
+    await page.waitForSelector('.demos .world-row');
+    await page.waitForTimeout(300);
+    const afterLoad = await holdKeys(page);
+    check(`${L}: a page load drops a kept account picture, and keeps the public's`, JSON.stringify(afterLoad) === JSON.stringify([pubKey]), JSON.stringify(afterLoad));
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
     await ctx.close().catch(() => {});
   });
@@ -649,6 +712,7 @@ if (process.argv[1]?.endsWith('signin.mjs')) {
   const fails = [];
   const check = (label, ok, detail = '') => {
     checks++;
+    if (process.env.SHOW) console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${which} ${label}${detail ? `: ${detail}` : ''}`);
     if (!ok) fails.push(`${which} ${label}${detail ? `: ${detail}` : ''}`);
   };
   const only = process.env.SECTIONS ? process.env.SECTIONS.split(',') : null;

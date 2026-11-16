@@ -278,14 +278,24 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   check(`${vp} links3d Back returns to the world's maps, which hold only the world's own`, (await where()) === `?world=${LW}` && JSON.stringify(rows) === '["Coast"]', `${await where()} ${JSON.stringify(rows)}`);
   check(`${vp} links3d the world's Pin count is its own`, (await page.locator('.map-row .row-meta').first().innerText()).includes('4 Pins'), await page.locator('.map-row .row-meta').first().innerText());
 
-  // 5. A second press in the tab: this tab's reading (no type read again) and the hold: nothing moves.
+  // 5. A second press in the tab: this tab's reading (no type read again) and the hold. The layout is
+  // the same each time, so the hold is moved first by a known step: an element the hold keeps comes
+  // back at the moved point, which the method could not have made by itself.
+  const STEP = [600, -300, 120];
+  const moved = { ...h1, xyz: h1.xyz.map((v, i) => v + STEP[i % 3]), at: Date.now() };
+  await plant(KEY, { v: 1, key: KEY, ...moved });
   from = sent.length;
   await page.locator('.links3d-offer button.links3d-press').click();
   await drawn();
   const second = await info();
   check(`${vp} links3d a second press keeps the picture: "${kept(0)}"`, (await heldLine()) === kept(0) && second?.from === 'kept', String(await heldLine()));
   check(`${vp} links3d a second press in the tab reads no element type again`, wholeReads(from).length === 0, JSON.stringify(wholeReads(from)));
-  check(`${vp} links3d every kept element stands at its held point, in the answer's frame, to the unit`, JSON.stringify(second?.xyz) === JSON.stringify(h1?.xyz) && JSON.stringify(second?.ids) === JSON.stringify(h1?.ids));
+  const want = pointsById(moved);
+  const got = pointsById(second ?? { ids: [], xyz: [] });
+  const pinned = new Set([L(1), L(2), L(3), C(4)]);
+  const off = [...want].filter(([k, v]) => !pinned.has(k) && got.get(k) !== v).map(([k]) => k);
+  const pinnedOff = [...want].filter(([k, v]) => pinned.has(k) && got.get(k) !== v).length;
+  check(`${vp} links3d every kept element that is not pinned stands at its held point, moved by a known step, to the unit`, !!second && off.length === 0 && want.size === 11, `${off.length} of 7 off; pinned elements off their moved point: ${pinnedOff} of 4`);
 
   if (!phone) {
     // 6. Lay out again from nothing: drawn fresh, without the hold, and the hold replaced.
