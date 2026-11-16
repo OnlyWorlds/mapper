@@ -7,7 +7,8 @@ import { chromium, firefox } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { serve } from './serve.mjs';
 
-const UNSAVED = 'Drawn here and not saved: nothing is written to the world. Atlas saves a layout.';
+const UNSAVED = 'Not saved: the mapper writes nothing. Atlas saves a layout.';
+const CHANGE = 'The method is not final; this device keeps the picture still meanwhile.';
 const FRESH = 'Laid out from nothing.';
 const LOST = 'The last picture could not be kept, so this one was laid out from nothing.';
 const kept = (n) => `Kept the picture you last saw here; ${n} placed new.`;
@@ -240,11 +241,11 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   state.slow = null;
   const first = await info();
   const reads1 = wholeReads(from);
-  check(`${vp} links3d the picture is drawn: one Pin per element this reader sees (11 of 12, the hidden one cut), with links`, ok1 && first?.nodes === 11 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 11 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) >= 8, JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
+  check(`${vp} links3d the picture is drawn: one Pin per element this reader sees (11 of 12, the hidden one cut), with links`, ok1 && first?.nodes === 11 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 11 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) >= 8 && (await page.locator('.status .counts').innerText()) === '11 elements · 12 link lines', JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
   check(`${vp} links3d the world's map is the plate: its four pinned elements stand at their Pins`, first?.plate === 4, JSON.stringify({ plate: first?.plate }));
   check(`${vp} links3d a first press says "${FRESH}"`, (await heldLine()) === FRESH, String(await heldLine()));
   check(`${vp} links3d the bar names the map and its kind`, (await page.locator('.map-name').innerText()) === HEAD && (await page.locator('.kind').innerText()) === KIND, `${await page.locator('.kind').innerText()}`);
-  check(`${vp} links3d the lines say Atlas saves a layout, the method may change, and when the world was read`, /Atlas saves a layout/.test(await statusText()) && /later version/.test(await statusText()) && /From the world as read at \d\d:\d\d; a reload reads it again\./.test(await statusText()), (await statusText()).slice(0, 400));
+  check(`${vp} links3d the lines say Atlas saves a layout, the method may change, and when the world was read`, (await statusText()).includes(UNSAVED) && (await statusText()).includes(CHANGE) && /Read at \d\d:\d\d; a reload reads again\./.test(await statusText()), (await statusText()).slice(0, 400));
   // The world's page already read every Pin for its counts (4 fit one read): the press reads them no more.
   check(`${vp} links3d it reads each element type keel counts above 0 once, and the Pins no more`, JSON.stringify([...reads1].sort()) === JSON.stringify(['character', 'location']), JSON.stringify(reads1));
   const on3d = await waitUntil(page, () => window.__mapper.view3d?.state === 'on', null, 30_000);

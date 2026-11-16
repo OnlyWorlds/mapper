@@ -17,7 +17,7 @@ import { placeLabels, type Placed } from '../core/labels';
 import { byName } from '../core/rows';
 import type { Scene } from '../core/scene';
 import type { ElementInfo, Item, ItemKind, LabelItem, LineItem, PinItem, Row, ZoneItem } from '../core/types';
-import { countsLine, outLine, plural } from '../core/words';
+import { countsLine, elementsLine, outLine, plural } from '../core/words';
 import { Picture } from '../view/picture';
 import { readTheme, Renderer, type Theme } from '../view/render';
 import type { Surface3D } from '../view/three3d';
@@ -131,8 +131,11 @@ export class MapView implements ModeHost {
   private focus: string | null;
   private focusDone = false;
   private at: At | null;
-  /** Positions are said in the card and the List: not on an unsaved layout, whose units mean nothing. */
-  private positions: boolean;
+  /**
+   * An unsaved picture (the world laid out in 3D): no positions in the card and the List (its units
+   * mean nothing), and its counts are elements and link lines (it has no Pins or Zones of its own).
+   */
+  private unsaved: boolean;
   private modes = makeModes();
   private mode: ModeName = 'look';
   private pointers = new Map<number, { x: number; y: number }>();
@@ -210,10 +213,10 @@ export class MapView implements ModeHost {
     parent: HTMLElement,
     readonly reading: MapReading,
     readonly ground: MapReading | null,
-    opts: { at: At | null; element: string | null; flat?: boolean; positions?: boolean },
+    opts: { at: At | null; element: string | null; flat?: boolean; unsaved?: boolean },
   ) {
     this.at = opts.at;
-    this.positions = opts.positions !== false;
+    this.unsaved = opts.unsaved === true;
     this.focus = opts.element;
     this.linesOn = linesAlwaysOn(reading.kind);
     if (!this.linesOn) this.hidden.add('line');
@@ -972,7 +975,7 @@ export class MapView implements ModeHost {
     clear(box);
     const line = (text: string, cls = '') => box.append(h('p', { class: cls }, text));
     const s = this.scene;
-    if (s) line(countsLine(s.counts), 'counts');
+    if (s) line(this.unsaved ? elementsLine(s.counts) : countsLine(s.counts), 'counts');
     if (this.line3d) {
       const l = this.line3d;
       if (l.retry) box.append(h('p', { class: `${l.cls} line3d`, role: 'alert' }, l.text + ' ', button(l.retry, () => this.retry3d(l.how === 'reload'), { class: 'retry' })));
@@ -1260,7 +1263,7 @@ export class MapView implements ModeHost {
         /* an id the waymark refuses: the name stands alone */
       }
     }
-    if (this.positions) for (const p of pins) block.append(h('p', { class: 'pos' }, p.z ? `At ${p.x}, ${p.y}, height ${p.z}` : `At ${p.x}, ${p.y}`));
+    if (!this.unsaved) for (const p of pins) block.append(h('p', { class: 'pos' }, p.z ? `At ${p.x}, ${p.y}, height ${p.z}` : `At ${p.x}, ${p.y}`));
     for (const z of zones) block.append(h('p', { class: 'pos' }, z.shape === 'line' ? `A line of ${plural(z.points.length, 'point')}` : `An area of ${plural(z.points.length, 'point')}`, z.source !== this.reading.id ? " on the ground's map" : ''));
     if (info.hidden) block.append(h('p', { class: 'note' }, 'Marked hidden: its Pin is drawn, its links are not.'));
     if (info.knownOf) block.append(h('p', { class: 'note' }, 'Known of: only its name is served to this reader, so it draws no links.'));
@@ -1321,7 +1324,7 @@ export class MapView implements ModeHost {
       const info = this.host.infoOf(el);
       const type = info.type ?? (first.kind === 'pin' ? first.elementType : 'zone');
       const where = first.kind === 'pin' ? `${first.x}, ${first.y}` : first.shape === 'line' ? 'a line' : 'an area';
-      return { el, name: info.name ?? 'An element this reader cannot see', type, where: this.positions ? where : null };
+      return { el, name: info.name ?? 'An element this reader cannot see', type, where: this.unsaved ? null : where };
     });
     rows.sort((a, b) => byName(a.name, b.name));
     box.append(h('h2', {}, `On this map (${rows.length})`));

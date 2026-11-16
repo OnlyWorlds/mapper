@@ -147,7 +147,7 @@ describe('the words', () => {
     expect(FRESH_LINE).toBe('Laid out from nothing.');
     expect(keptWords(0)).toBe('Kept the picture you last saw here; 0 placed new.');
     expect(keptWords(1234)).toBe('Kept the picture you last saw here; 1,234 placed new.');
-    expect(readAtWords(new Date(2026, 10, 16, 9, 4))).toBe('From the world as read at 09:04; a reload reads it again.');
+    expect(readAtWords(new Date(2026, 10, 16, 9, 4))).toBe('Read at 09:04; a reload reads again.');
     expect(readingWords(1, 0)).toBe('Reading what you can see of the world: 1 element so far, 0 s.');
     expect(layingWords(2500, 3)).toBe('Laying out the 2,500 elements read, 3 s so far.');
     expect(ceilingWords3d()).toBe('This world holds more than 10,000 elements you can see, too many for the mapper to lay out here.');
@@ -159,7 +159,7 @@ describe('the words', () => {
       expect(w).not.toMatch(/every element/i);
     }
     expect(EMPTY_LINE).toBe('Nothing to lay out for you here.');
-    expect(UNSAVED_LINE).toMatch(/Atlas saves a layout/);
-    expect(CHANGE_LINE).toMatch(/later version/);
+    expect(UNSAVED_LINE).toBe('Not saved: the mapper writes nothing. Atlas saves a layout.');
+    expect(CHANGE_LINE).toBe('The method is not final; this device keeps the picture still meanwhile.');
   });
 });

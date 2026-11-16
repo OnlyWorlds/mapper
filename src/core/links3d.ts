@@ -114,8 +114,8 @@ export const KIND_WORDS = 'a layout · 3D · not saved';
 export const OFFER_HEAD = 'The world in 3D';
 export const OFFER_BUTTON = 'Lay out by links, in 3D';
 export const OFFER_WORDS = 'Draws the elements you can see, joined by their links, in 3D. It is drawn here and not saved: the mapper writes nothing to the world.';
-export const UNSAVED_LINE = 'Drawn here and not saved: nothing is written to the world. Atlas saves a layout.';
-export const CHANGE_LINE = 'The method is not final, so a later version of the mapper may draw this world differently; the picture kept on this device keeps it still meanwhile.';
+export const UNSAVED_LINE = 'Not saved: the mapper writes nothing. Atlas saves a layout.';
+export const CHANGE_LINE = 'The method is not final; this device keeps the picture still meanwhile.';
 export const FRESH_LINE = 'Laid out from nothing.';
 export const AGAIN_BUTTON = 'Lay out again from nothing';
 export const LOST_LINE = 'The last picture could not be kept, so this one was laid out from nothing.';
@@ -142,7 +142,7 @@ export function ceilingWords3d(): string {
 export function readAtWords(at: Date): string {
   const hh = String(at.getHours()).padStart(2, '0');
   const mm = String(at.getMinutes()).padStart(2, '0');
-  return `From the world as read at ${hh}:${mm}; a reload reads it again.`;
+  return `Read at ${hh}:${mm}; a reload reads again.`;
 }
 
 /** The running line while the world is read. */

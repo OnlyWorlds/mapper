@@ -49,3 +49,8 @@ export function progressLine(steps: readonly ReadStep[]): string | null {
 export function countsLine(c: Scene['counts']): string {
   return [plural(c.pins, 'Pin'), plural(c.zones, 'Zone'), plural(c.elements, 'element'), plural(c.lines, 'link line')].join(' · ');
 }
+
+/** An unsaved picture has no Pins or Zones of its own: its elements and link lines only. */
+export function elementsLine(c: Scene['counts']): string {
+  return [plural(c.elements, 'element'), plural(c.lines, 'link line')].join(' · ');
+}

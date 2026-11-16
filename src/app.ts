@@ -1085,7 +1085,7 @@ export class App {
         else this.go({ ...HOME, world: ws.id });
       },
     };
-    const mv = new MapView(host, this.page, reading, null, { at: null, element: null, flat: this.writer.current().view === 'flat', positions: false });
+    const mv = new MapView(host, this.page, reading, null, { at: null, element: null, flat: this.writer.current().view === 'flat', unsaved: true });
     this.map = mv;
     mv.setExtra(h('p', { class: 'held3d' }, holdLine, ' ', button(AGAIN_BUTTON, again, { class: 'again3d' })));
     mv.setScene(scene);
