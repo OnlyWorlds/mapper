@@ -74,13 +74,27 @@ function setup(url = `?world=${W}`) {
 describe('the address', () => {
   it('reads and writes its words', () => {
     const a = parseAddress(`?world=${W}&type=Location&element=${M1}&map=${M2}&at=10,20,300&measure=1`);
-    expect(a).toEqual({ world: W, type: 'location', element: M1, map: M2, at: { x: 10, y: 20, span: 300 }, measure: true, view: null });
+    expect(a).toEqual({ world: W, type: 'location', element: M1, map: M2, at: { x: 10, y: 20, span: 300 }, measure: true, view: null, layout: null });
     expect(formatAddress(a)).toBe(`?world=${W}&type=location&element=${M1}&map=${M2}&at=10,20,300&measure=1`);
   });
   it('reads view=flat and nothing else as a view', () => {
     expect(parseAddress(`?world=${W}&map=${M1}&view=flat`).view).toBe('flat');
     expect(parseAddress(`?world=${W}&map=${M1}&view=3d`).view).toBeNull();
     expect(formatAddress(parseAddress(`?world=${W}&map=${M1}&view=flat&at=1,2,3`))).toBe(`?world=${W}&map=${M1}&view=flat&at=1,2,3`);
+  });
+  it('reads and writes layout=by-links-3d only on a world with no map, element or type, and never an at beside it', () => {
+    const a = parseAddress(`?world=${W}&layout=by-links-3d`);
+    expect(a.layout).toBe('by-links-3d');
+    expect(formatAddress(a)).toBe(`?world=${W}&layout=by-links-3d`);
+    expect(formatAddress(parseAddress(`?world=${W}&layout=by-links-3d&view=flat&measure=1`))).toBe(`?world=${W}&layout=by-links-3d&view=flat&measure=1`);
+    const at = parseAddress(`?world=${W}&layout=by-links-3d&at=1,2,3`);
+    expect(at.at).toBeNull();
+    expect(formatAddress({ ...at, at: { x: 1, y: 2, span: 3 } })).toBe(`?world=${W}&layout=by-links-3d`);
+    for (const q of [`?layout=by-links-3d`, `?world=${W}&map=${M1}&layout=by-links-3d`, `?world=${W}&type=location&element=${M1}&layout=by-links-3d`, `?world=${W}&element=${M1}&layout=by-links-3d`, `?world=${W}&layout=by-kind`, `?world=${W}&layout=BY-LINKS-3D`]) {
+      expect(parseAddress(q).layout).toBeNull();
+    }
+    expect(formatAddress({ world: W, type: null, element: null, map: M1, at: null, measure: false, layout: 'by-links-3d' })).toBe(`?world=${W}&map=${M1}`);
+    expect(parseAddress(`?world=${W}&map=${M1}&layout=by-links-3d&at=1,2,3`).at).toEqual({ x: 1, y: 2, span: 3 });
   });
   it('drops an at it cannot read', () => {
     expect(parseAddress('?at=1,2').at).toBeNull();
@@ -212,6 +226,35 @@ describe('the address writer', () => {
     expect(() => w.gestureEnded(M1, { x: 1, y: 2, span: 3 })).not.toThrow();
     expect(w.log).toHaveLength(0);
     expect(() => w.markShown(M2)).not.toThrow();
+  });
+
+  it('on the layout page: pushed and Back-able; Flat keeps layout and never names a map; no camera is written', () => {
+    const { h, t, w } = setup();
+    w.push({ ...w.current(), layout: 'by-links-3d' }, null);
+    expect(h.url).toBe(`?world=${W}&layout=by-links-3d`);
+    expect(w.depth()).toBe(1);
+    w.setView('by-links-3d', true);
+    expect(h.url).toBe(`?world=${W}&layout=by-links-3d&view=flat`);
+    expect(w.shownMap()).toBeNull();
+    w.gestureEnded('by-links-3d', { x: 5, y: 6, span: 700 });
+    w.gestureEnded('by-links-3d', { x: 5, y: 6, span: 700 }, 300);
+    t.advance(1000);
+    expect(h.url).toBe(`?world=${W}&layout=by-links-3d&view=flat`);
+    w.setView('by-links-3d', false);
+    expect(h.url).toBe(`?world=${W}&layout=by-links-3d`);
+    w.markShown(null);
+    expect(h.url).toBe(`?world=${W}&layout=by-links-3d`);
+    expect(h.entries.map((e) => e.url).join(' ')).not.toContain('map=');
+    h.back();
+    expect(parseAddress(h.url).layout).toBeNull();
+  });
+
+  it('a camera write pending from a Map does not land once the entry is the layout page', () => {
+    const { h, t, w } = setup(`?world=${W}&map=${M1}`);
+    w.gestureEnded(M1, { x: 5, y: 6, span: 700 }, 300);
+    h.replaceState(h.state, '', `?world=${W}&layout=by-links-3d`);
+    t.advance(1000);
+    expect(h.url).toBe(`?world=${W}&layout=by-links-3d`);
   });
 
   it('never carries at into a pushed entry', () => {

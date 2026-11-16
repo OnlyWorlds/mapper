@@ -7,6 +7,10 @@
 //   &view=flat                          a layout map with a depth drawn flat, by a press on Flat
 //                                       (replaceState; a press on 3D drops it; the 3D camera is
 //                                       never written, and `at`, a flat camera, is read only flat)
+//   &layout=by-links-3d                 the world laid out by its links in 3D, here and unsaved
+//                                       (pushState, so Back returns to the world's maps); it counts
+//                                       only with `world` and no `map`, `element` or `type`, `at` is
+//                                       never read or written on it, and `view=flat` rides beside it
 //   &measure=1                          the measure readout
 // A press that writes the address first cancels a pending `at`, and an `at` write checks that the
 // entry it writes still shows the Map whose camera it holds; on an entry that shows its Map without
@@ -26,7 +30,12 @@ export interface Address {
   measure: boolean;
   /** `flat` when a press asked a layout map with a depth to be drawn flat; absent or null otherwise. */
   view?: 'flat' | null;
+  /** The world laid out by its links in 3D, unsaved: its page of its own; absent or null otherwise. */
+  layout?: Layout | null;
 }
+
+/** The one layout the mapper makes itself (unsaved): the SDK's `by-links-3d`. */
+export type Layout = 'by-links-3d';
 
 export const EMPTY: Address = { world: null, type: null, element: null, map: null, at: null, measure: false };
 
@@ -45,14 +54,21 @@ export function parseAddress(search: string): Address {
     const v = q.get(k);
     return v && v.trim() ? v.trim() : null;
   };
+  const world = get('world');
+  const type = get('type')?.toLowerCase() ?? null;
+  const element = get('element');
+  const map = get('map');
+  const layout: Layout | null = world && !map && !element && !type && get('layout') === 'by-links-3d' ? 'by-links-3d' : null;
   return {
-    world: get('world'),
-    type: get('type')?.toLowerCase() ?? null,
-    element: get('element'),
-    map: get('map'),
-    at: parseAt(get('at')),
+    world,
+    type,
+    element,
+    map,
+    // The layout's picture has no camera in the address: an `at` beside it is not read.
+    at: layout ? null : parseAt(get('at')),
     measure: q.get('measure') === '1',
     view: q.get('view') === 'flat' ? 'flat' : null,
+    layout,
   };
 }
 
@@ -62,8 +78,10 @@ export function formatAddress(a: Address): string {
   if (a.type) q.set('type', a.type);
   if (a.element) q.set('element', a.element);
   if (a.map) q.set('map', a.map);
+  const layout = a.layout === 'by-links-3d' && a.world && !a.map && !a.element && !a.type;
+  if (layout) q.set('layout', 'by-links-3d');
   if (a.view === 'flat') q.set('view', 'flat');
-  if (a.at) q.set('at', `${Math.round(a.at.x)},${Math.round(a.at.y)},${Math.round(a.at.span)}`);
+  if (a.at && !layout) q.set('at', `${Math.round(a.at.x)},${Math.round(a.at.y)},${Math.round(a.at.span)}`);
   if (a.measure) q.set('measure', '1');
   const s = q.toString().replace(/%2C/g, ',');
   return s ? `?${s}` : '?';
@@ -169,10 +187,11 @@ export class AddressWriter {
    */
   setView(map: string, flat: boolean): void {
     this.cancelPending();
-    if (this.shownMap() !== map) return;
     const now = this.current();
-    const url = formatAddress({ ...now, map: now.map ?? map, at: null, view: flat ? 'flat' : null });
-    const state: EntryState = entry(this.hist.state) ?? { mapper: 1, map, depth: 0 };
+    // The layout's picture: its made-up Map is never named in the address; `layout` is the entry.
+    if (!now.layout && this.shownMap() !== map) return;
+    const url = formatAddress({ ...now, map: now.layout ? null : now.map ?? map, at: null, view: flat ? 'flat' : null });
+    const state: EntryState = entry(this.hist.state) ?? { mapper: 1, map: now.layout ? null : map, depth: 0 };
     try {
       this.hist.replaceState(state, '', url);
     } catch {
@@ -187,10 +206,13 @@ export class AddressWriter {
    */
   gestureEnded(map: string, at: At, delay = 0): void {
     this.cancelPending();
+    // The layout's picture keeps no camera, flat or 3D.
+    if (this.current().layout) return;
     const write = () => {
       this.pending = null;
       if (this.shownMap() !== map) return;
       const now = this.current();
+      if (now.layout) return;
       const url = formatAddress({ ...now, map: now.map ?? map, at });
       const state: EntryState = entry(this.hist.state) ?? { mapper: 1, map, depth: 0 };
       this.fill();
