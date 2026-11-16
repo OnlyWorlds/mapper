@@ -16,7 +16,7 @@
     "walk:unplaced": "node walk/unplaced.mjs chromium && node walk/unplaced.mjs firefox"
   },
   "dependencies": {
-    "@onlyworlds/sdk": "4.170.1",
+    "@onlyworlds/sdk": "4.171.0",
     "three": "0.186.1"
   },
   "devDependencies": {
