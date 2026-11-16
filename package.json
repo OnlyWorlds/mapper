@@ -15,7 +15,7 @@
     "walk:look": "node walk/look.mjs"
   },
   "dependencies": {
-    "@onlyworlds/sdk": "4.164.0",
+    "@onlyworlds/sdk": "4.170.1",
     "three": "0.186.1"
   },
   "devDependencies": {
