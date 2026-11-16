@@ -25,11 +25,13 @@ An id that is not an id is said at once. A world that is not public, or not ther
 - **A layout's ground.** A layout drawn over another map shows that map's picture and Zones under its Pins, placed where the layout's own settings say.
 - **Layouts with a depth open in 3D.** Each Pin stands at its height, with a thin stem down to the ground's height; the links run between the Pins where they stand; the ground's picture lies at its own height and never hides what is under it. Drag to turn (one finger on a phone), the wheel or two fingers to zoom, right-drag to move; the arrow keys turn, + and − zoom, Fit and `0` show the whole map again. The selection, the card and the List are the same as flat, and **Flat** draws the same map flat. The 3D view's code is fetched only when a 3D map opens; if it cannot be fetched, or the browser cannot start WebGL, the map is drawn flat with a line saying why.
 
+- **The world in 3D, by its links.** A world's page offers *Lay out by links, in 3D*: every element you can see, joined by its links, laid out by the OnlyWorlds method `by-links-3d` and drawn in the 3D view as a layout map would be (Flat, the card and the List as on any map). It is drawn here and not saved: the mapper writes nothing, and Atlas is where a layout is saved. When the world has a map that pins three or more of its elements, the map that pins the most is a flat plate, each of its pinned elements at its Pin. The reads and the layout never hold the page: the reads go one at a time, the layout runs in a worker of its own, and a line counts the elements and the seconds, with **Cancel**. The picture is kept on this device (in the browser's IndexedDB, at most four pictures, the oldest dropped first), per world and per reader, so the next press keeps it still and places only what is new: a line says "Laid out from nothing." or "Kept the picture you last saw here; N placed new.", and **Lay out again from nothing** draws a fresh one. Signing out drops every picture kept for an account or a key. A press uses this tab's reading of the world (the line says when it was read); a reload reads again. Above 10,000 elements you can see the press is not offered; a world whose Pins pass 10,000 is laid out with no plate, said in one line. The method is not final, so a later version may draw a world differently: the kept picture keeps it still meanwhile.
+
 The page says what it reads while it reads (Pins, then Markers, then Zones, then the elements), draws what has arrived, and says when a read fails, with Try again. OnlyWorlds lets a visitor read 60 times a minute; when that is reached the page waits and says for how long. What the map reading leaves aside (a Marker whose Zone is not served, a Zone with no Marker) is said in one line once every read has landed.
 
 ## The address
 
-The home is `/`. The address keeps the view: `&map=<id>` when you open a map (Back returns to the list), and `&at=<x>,<y>,<span>` after you move the map yourself, so a shared link opens the same place; on an element's maps that write names the map too, so the link opens the same one (the span is the map units across the shorter side of the window, so a phone and a desk see the same area). On a layout with a depth, Flat adds `&view=flat`; the 3D camera is not kept in the address, so a link to a 3D map opens it whole. Add `&measure=1` for a readout of the picture's first draw and the frame times.
+The home is `/`. The address keeps the view: `&map=<id>` when you open a map (Back returns to the list), and `&at=<x>,<y>,<span>` after you move the map yourself, so a shared link opens the same place; on an element's maps that write names the map too, so the link opens the same one (the span is the map units across the shorter side of the window, so a phone and a desk see the same area). The world in 3D is `&layout=by-links-3d` (Back returns to the world's maps; a reload lays it out again, with the kept picture), never with a camera; Flat adds `&view=flat` beside it, and a sign-in started there comes back to the world's maps. On a layout with a depth, Flat adds `&view=flat`; the 3D camera is not kept in the address, so a link to a 3D map opens it whole. Add `&measure=1` for a readout of the picture's first draw and the frame times.
 
 ## Run it
 
@@ -51,16 +53,20 @@ src/core/    the pure part: kinds of map, the store and the slice, the builder (
              the pointer's order (hit.ts, and hit3d.ts for the 3D view's projected list),
              the camera, labels, the address and its writer,
              the home's order of a world's maps and its words (home.ts), the demo worlds
-             built into the page (demos.ts, written by walk/demos.mjs)
+             built into the page (demos.ts, written by walk/demos.mjs), the 3D layout's answer
+             as a made-up Map and Pins and its words (links3d.ts), the kept picture's key and
+             form (hold.ts), and what its worker runs (layout3d.ts, links3d.worker.ts)
 src/net/     reads: one at a time (a page that reads several worlds shares one queue), each with
              its own time limit over the whole answer, a 429 waited out, stopped when their
              page is left; on the account token, the first 401 is the sign-in ending, said once
 src/auth/    Sign in with OnlyWorlds (the round trip's record in localStorage with a stamp, swept
              after an hour; the callback taken at load, before any other request) and the
-             token's revoke (keepalive, once more without on refusal)
+             token's revoke (keepalive, once more without on refusal); net/holds.ts keeps the 3D
+             layout's pictures in IndexedDB
 src/view/    the canvas renderer, the picture's downscaled copies, and the 3D surface (three3d.ts,
              three.js, in a chunk of its own fetched only when a 3D map opens)
-src/ui/      the map view, the home's rows and cards, the one pointer mode, small DOM helpers
+src/ui/      the map view, the home's rows and cards, the one pointer mode, small DOM helpers,
+             the page's side of the 3D layout's worker (layout-worker.ts)
 src/app.ts   the pages: the home, a world's maps, an element's maps, a map; the sign-in's life
              (held by the reader and the world's id, ended once, revoked when the page is left)
 ```
@@ -85,7 +91,9 @@ npm run walk:look     # the page against the real worlds, screenshots in .scratc
 
 The played walk also plays what the public worlds do not hold: a read whose body stalls, a Pin and a Marker far past their map, a map with no written size, a name of 3,000 characters, a stranger's markup as names. Its sign-in part serves the build as maps.onlyworlds.com under the host's own rules (`walk/host.mjs`, which the walks' local server uses too) and plays OnlyWorlds' sign-in: the consent page, the exchange, the account's worlds, reads on the token, the revoke, a sign-in that ends, a member of forty worlds, Back, a reload, and leaving the page.
 
-The played walk's 3D sections read the WebGL canvas through screenshots (`walk/png.mjs`): the ground drawn and the right way up (against the flat view and its mirror), a buried Pin drawn and pressed, a turn that selects nothing, Flat and back, the 3D code blocked and WebGL refused. `node walk/chunks.mjs` builds once more and fails if any of three.js reaches the page's first chunk.
+The played walk's 3D sections read the WebGL canvas through screenshots (`walk/png.mjs`): the ground drawn and the right way up (against the flat view and its mirror), a buried Pin drawn and pressed, a turn that selects nothing, Flat and back, the 3D code blocked and WebGL refused. `node walk/chunks.mjs` builds once more and fails if any of three.js reaches the page's first chunk, or the 3D layout's code (found by `held-box`, a word only it holds) is anywhere but its worker's own file.
+
+The played walk's section `links3d` (`walk/links3d.mjs`, also run alone: `node walk/links3d.mjs [chromium|firefox]`) plays worlds of its own: the press, the running line and Cancel (while it reads and while the worker lays out 2,000 richly linked elements), the kept picture (a second press, an element added between two reloads, a planted bad picture), Lay out again from nothing, Flat, Back, the ceilings, an empty world, a failed read and its Try again, and that every request is a GET.
 
 `node walk/demos.mjs` writes the demo worlds' list again from keyless reads, when their maps change.
 

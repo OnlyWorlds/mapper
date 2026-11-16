@@ -13,7 +13,8 @@
     "walk:played": "node walk/played.mjs chromium && node walk/played.mjs firefox",
     "walk:webkit": "node walk/webkit.mjs",
     "walk:look": "node walk/look.mjs",
-    "walk:unplaced": "node walk/unplaced.mjs chromium && node walk/unplaced.mjs firefox"
+    "walk:unplaced": "node walk/unplaced.mjs chromium && node walk/unplaced.mjs firefox",
+    "walk:links3d": "node walk/links3d.mjs chromium && node walk/links3d.mjs firefox"
   },
   "dependencies": {
     "@onlyworlds/sdk": "4.171.0",
