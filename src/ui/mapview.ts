@@ -131,6 +131,8 @@ export class MapView implements ModeHost {
   private focus: string | null;
   private focusDone = false;
   private at: At | null;
+  /** Positions are said in the card and the List: not on an unsaved layout, whose units mean nothing. */
+  private positions: boolean;
   private modes = makeModes();
   private mode: ModeName = 'look';
   private pointers = new Map<number, { x: number; y: number }>();
@@ -208,9 +210,10 @@ export class MapView implements ModeHost {
     parent: HTMLElement,
     readonly reading: MapReading,
     readonly ground: MapReading | null,
-    opts: { at: At | null; element: string | null; flat?: boolean },
+    opts: { at: At | null; element: string | null; flat?: boolean; positions?: boolean },
   ) {
     this.at = opts.at;
+    this.positions = opts.positions !== false;
     this.focus = opts.element;
     this.linesOn = linesAlwaysOn(reading.kind);
     if (!this.linesOn) this.hidden.add('line');
@@ -1257,7 +1260,7 @@ export class MapView implements ModeHost {
         /* an id the waymark refuses: the name stands alone */
       }
     }
-    for (const p of pins) block.append(h('p', { class: 'pos' }, p.z ? `At ${p.x}, ${p.y}, height ${p.z}` : `At ${p.x}, ${p.y}`));
+    if (this.positions) for (const p of pins) block.append(h('p', { class: 'pos' }, p.z ? `At ${p.x}, ${p.y}, height ${p.z}` : `At ${p.x}, ${p.y}`));
     for (const z of zones) block.append(h('p', { class: 'pos' }, z.shape === 'line' ? `A line of ${plural(z.points.length, 'point')}` : `An area of ${plural(z.points.length, 'point')}`, z.source !== this.reading.id ? " on the ground's map" : ''));
     if (info.hidden) block.append(h('p', { class: 'note' }, 'Marked hidden: its Pin is drawn, its links are not.'));
     if (info.knownOf) block.append(h('p', { class: 'note' }, 'Known of: only its name is served to this reader, so it draws no links.'));
@@ -1318,14 +1321,14 @@ export class MapView implements ModeHost {
       const info = this.host.infoOf(el);
       const type = info.type ?? (first.kind === 'pin' ? first.elementType : 'zone');
       const where = first.kind === 'pin' ? `${first.x}, ${first.y}` : first.shape === 'line' ? 'a line' : 'an area';
-      return { el, name: info.name ?? 'An element this reader cannot see', type, where };
+      return { el, name: info.name ?? 'An element this reader cannot see', type, where: this.positions ? where : null };
     });
     rows.sort((a, b) => byName(a.name, b.name));
     box.append(h('h2', {}, `On this map (${rows.length})`));
     const ul = h('ul', { class: 'rows list-rows' });
     for (const r of rows) {
       const b = button('', () => this.selectElement(r.el, true), { class: 'row' });
-      b.append(h('span', { class: 'row-name' }, r.name), h('span', { class: 'row-meta' }, `${typeName(r.type)} · ${r.where}`));
+      b.append(h('span', { class: 'row-name' }, r.name), h('span', { class: 'row-meta' }, r.where ? `${typeName(r.type)} · ${r.where}` : typeName(r.type)));
       ul.append(h('li', {}, b));
     }
     box.append(ul);

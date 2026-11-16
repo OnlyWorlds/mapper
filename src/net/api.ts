@@ -259,6 +259,24 @@ export class Api {
     return rows;
   }
 
+  /**
+   * Every page of a list, stopped once more than `max` rows have come: `over` says the type holds
+   * more than `max` for this reader, and its rows are then not whole (a ceiling read, never kept).
+   */
+  async allUpTo(type: string, max: number, onPage?: (rows: Row[]) => void, signal?: AbortSignal): Promise<{ rows: Row[]; over: boolean }> {
+    const rows: Row[] = [];
+    let cursor: string | undefined;
+    do {
+      const p = await this.run(() => this.#client.list(type, { limit: 1000, cursor }), signal);
+      const got = p.data as unknown as Row[];
+      rows.push(...got);
+      onPage?.(got);
+      if (rows.length > max) return { rows, over: true };
+      cursor = p.has_more && p.next_cursor ? p.next_cursor : undefined;
+    } while (cursor);
+    return { rows, over: false };
+  }
+
   /** Bodies by id, in calls of at most 200 (one type a call). */
   async byIds(type: string, ids: readonly string[], onCall?: (rows: Row[]) => void, signal?: AbortSignal): Promise<Row[]> {
     const out: Row[] = [];

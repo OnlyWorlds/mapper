@@ -79,6 +79,10 @@ Object.defineProperty(window, '__mapper', {
     get signedIn() {
       return app.signedIn;
     },
+    /** The 3D layout's last press: how it drew, its times, its points (rounded, in the answer's own frame). */
+    get links3d() {
+      return app.links3d ? structuredClone(app.links3d) : null;
+    },
   }),
 });
 

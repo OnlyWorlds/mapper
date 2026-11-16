@@ -11,17 +11,25 @@ import { beginSignIn, canSignIn, resumeFrom, signInCallbackLine, type SignInOutc
 import { AddressWriter, type Address } from './core/address';
 import { DEMOS } from './core/demos';
 import { accountOrder, homeOrder, homeRow, roleWords, rungOf, type MapCard } from './core/home';
+import { dropNonPublic, encodeHold, flatHold, holdKey, keepHold, keyHash12, readHold, type HoldRead, type Who } from './core/hold';
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
+import {
+  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
+  madeUp, NO_PLATE_LINE, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
+  STOPPED_LINE, UNSAVED_LINE,
+} from './core/links3d';
 import { elementTypeOf, isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
-import { bodiesToRead, chunks, sliceFor, zonesToRead } from './core/slice';
+import { bodiesToRead, chunks, sliceFor, zonesToRead, type Slice } from './core/slice';
 import { WorldStore } from './core/store';
 import { ceilingWords, COUNT_CEILING, COUNT_FAILED_WORDS, COUNT_REFUSED_WORDS, counted, COUNTING_WORDS, countPlan, countUnplaced, unplacedWords } from './core/unplaced';
 import type { ElementInfo, Row } from './core/types';
 import { plural, progressLine, type ReadStep } from './core/words';
 import { Api, asFailure, ENDED_LINE, failureWords, ReadFailure, ReadQueue } from './net/api';
+import { openHolds } from './net/holds';
 import { button, clear, h, isPhone, typeName } from './ui/dom';
 import { allCardText, mapCardBody, worldRow } from './ui/home';
+import { LayoutFailure, layOutOffPage } from './ui/layout-worker';
 import { MapView, type MapStatus } from './ui/mapview';
 
 /** Pin counts per Map are read only when every Pin of the world fits one read. */
@@ -47,6 +55,8 @@ interface WorldState {
   graphs: GraphCache;
   /** Whole types read for the unplaced count, by type: kept apart from the store, so the count never moves the drawing. */
   countRows: Map<string, Row[]>;
+  /** When the last whole type landed in `countRows` (or the whole Pin read): the 3D layout says it. */
+  readAt: number | null;
   elements: Map<string, { body: Row | null; type: string | null; pins: Row[]; longWay: boolean }>;
   onWait: (line: string | null) => void;
 }
@@ -187,6 +197,8 @@ export class App {
     this.session = null;
     this.mine = null;
     this.homeMaps.clear();
+    // The 3D pictures kept for an account or a key name what it read: they go with the sign-in.
+    if (s) void dropNonPublic(openHolds);
     return s;
   }
 
@@ -310,6 +322,7 @@ export class App {
     if (!ws || gen !== this.gen) return;
     if (a.element) return this.elementPage(ws, a, gen);
     if (a.map) return this.mapPage(ws, a, gen, null, null);
+    if (a.layout) return this.layoutPage(ws, gen);
     return this.mapsPage(ws, gen);
   }
 
@@ -663,7 +676,7 @@ export class App {
       }
     }
     const ws: WorldState = {
-      id, reader, api, store: new WorldStore(), meta, rung, account, done: new Set(), pinCounts: null, countsNote: null, countRows: new Map(),
+      id, reader, api, store: new WorldStore(), meta, rung, account, done: new Set(), pinCounts: null, countsNote: null, countRows: new Map(), readAt: null,
       graphs: new GraphCache(), elements: new Map(), onWait: () => {},
     };
     // The Maps list the home read on the token is handed over: a press from the home reads it once.
@@ -774,7 +787,7 @@ export class App {
       this.worldHeading(ws),
       this.readerNote(ws),
       this.keyNote && ws.reader === 'key' ? h('p', { class: 'note' }, this.keyNote) : null,
-      status, countLine, list);
+      status, countLine, list, this.layoutOffer(ws));
     this.page.append(section);
     ws.onWait = (l) => {
       clear(status);
@@ -819,6 +832,255 @@ export class App {
       draw();
     };
     await run();
+  }
+
+  // ---- the world laid out by its links in 3D, here and unsaved
+
+  /** What the last press drew, for the walks: never the rows. Points are the answer's, rounded, in its own frame. */
+  links3d: { from: 'nothing' | 'kept' | 'lost'; fresh: number; nodes: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[] } | null = null;
+
+  /** The press on a world's page: offered only when the world fits the ceiling, else a line says why. */
+  private layoutOffer(ws: WorldState): HTMLElement {
+    const plan = countPlan(ws.meta.counts?.types as Record<string, unknown> | undefined);
+    const over = plan.total !== null && plan.total > COUNT_CEILING;
+    return h('section', { class: 'links3d-offer', 'aria-labelledby': 'links3d-h' },
+      h('h2', { id: 'links3d-h' }, OFFER_HEAD),
+      h('p', { class: over ? 'note ceiling3d' : 'hint' }, over ? ceilingWords3d() : OFFER_WORDS),
+      over ? null : button(OFFER_BUTTON, () => this.go({ ...HOME, world: ws.id, layout: 'by-links-3d' }, null), { class: 'links3d-press' }));
+  }
+
+  /** Who reads, for the hold's key: never the key itself. */
+  private async whoReads(ws: WorldState): Promise<Who> {
+    if (ws.reader === 'account' && this.session) return { reader: 'account', login: this.session.username };
+    if (ws.reader === 'key' && this.key) return { reader: 'key', hash12: await keyHash12(this.key) };
+    return { reader: 'public' };
+  }
+
+  /**
+   * The world laid out by its links in 3D: a page of its own. The rows are this tab's reading of the
+   * world (the unplaced count's, shared, read once); the layout runs in a worker; the answer becomes
+   * a made-up Map and Pins that never enter the world store, drawn by the mapper's own builder.
+   */
+  private async layoutPage(ws: WorldState, gen: number): Promise<void> {
+    document.title = `${HEAD} · ${ws.meta.name} · OnlyWorlds mapper`;
+    const leave = this.leave.signal;
+    let ctl: AbortController | null = null;
+
+    /** The page's head and its box of lines, drawn again for each press. */
+    const head = (): HTMLElement => {
+      this.map?.destroy();
+      this.map = null;
+      clear(this.page);
+      this.page.className = 'page';
+      const box = h('div', { class: 'status-page', 'aria-live': 'polite' });
+      this.page.append(h('section', { class: 'intro wide links3d' },
+        h('p', { class: 'crumb' }, this.link(ws.meta.name || 'The world', { ...HOME, world: ws.id })),
+        h('h1', {}, HEAD),
+        this.readerNote(ws),
+        h('p', { class: 'note' }, UNSAVED_LINE),
+        h('p', { class: 'note' }, CHANGE_LINE),
+        box));
+      return box;
+    };
+
+    const run = async (fromNothing: boolean): Promise<void> => {
+      ctl?.abort();
+      const c = new AbortController();
+      ctl = c;
+      const stopOnLeave = () => c.abort();
+      leave.addEventListener('abort', stopOnLeave, { once: true });
+      this.links3d = null;
+      const box = head();
+      const live = () => gen === this.gen && ctl === c && !c.signal.aborted;
+      const mine = () => gen === this.gen && ctl === c;
+      const say = (cls: string, text: string, ...after: HTMLElement[]) => {
+        clear(box);
+        box.append(h('p', { class: cls, role: cls === 'failure' ? 'alert' : 'status' }, text, ...after.flatMap((b) => [' ', b])));
+      };
+      const tryAgain = () => button('Try again', () => void run(fromNothing), { class: 'retry' });
+      // Cancel: nothing is drawn after it, and the next press resumes at the types not read whole.
+      const stopped = (): void => {
+        if (mine()) say('note stopped3d', STOPPED_LINE, button(START_BUTTON, () => void run(fromNothing), { class: 'again3d' }));
+      };
+
+      const t0 = performance.now();
+      let laying = false;
+      let n = 0;
+      const line = h('p', { class: 'progress running3d', role: 'status' });
+      const waitLine = h('p', { class: 'wait' });
+      waitLine.hidden = true;
+      const tick = () => {
+        const sec = Math.floor((performance.now() - t0) / 1000);
+        line.textContent = laying ? layingWords(n, sec) : readingWords(n, sec);
+      };
+      box.append(line, waitLine, h('p', { class: 'cancel-row' }, button(CANCEL_BUTTON, () => c.abort(), { class: 'cancel3d' })));
+      tick();
+      const timer = window.setInterval(tick, 1000);
+      ws.onWait = (l) => {
+        if (!mine()) return;
+        waitLine.hidden = !l;
+        waitLine.textContent = l ?? '';
+      };
+      let what = 'maps';
+      try {
+        let mapsFailed: ReadFailure | null = null;
+        const okMaps = await this.ensureMaps(ws, (_l, f) => {
+          if (f) mapsFailed = f;
+        }, c.signal);
+        if (!okMaps) throw mapsFailed ?? new ReadFailure('page', null, 'maps');
+        if (!live()) return stopped();
+
+        // Size is said before it is spent: a served total above the ceiling reads nothing; with no
+        // counts, the read stops at the ceiling.
+        const plan = countPlan(ws.meta.counts?.types as Record<string, unknown> | undefined);
+        if (plan.total !== null && plan.total > COUNT_CEILING) return say('note ceiling3d', ceilingWords3d());
+        for (const t of plan.types) n += ws.countRows.get(t)?.length ?? 0;
+        tick();
+        what = 'elements';
+        for (const t of plan.types) {
+          if (ws.countRows.has(t)) continue;
+          const got = await ws.api.allUpTo(t, COUNT_CEILING - n, (rows) => {
+            n += rows.length;
+            tick();
+          }, c.signal);
+          if (!live()) return stopped();
+          if (got.over) return say('note ceiling3d', ceilingWords3d());
+          ws.countRows.set(t, got.rows);
+          ws.readAt = Date.now();
+        }
+
+        // The Pins, for the plate: their own read and their own ceiling.
+        let pins: Row[] | null;
+        const pinTotal = (ws.meta.counts?.types as Record<string, unknown> | undefined)?.pin;
+        if (ws.done.has('pins')) pins = ws.store.ofType('pin');
+        else if (typeof pinTotal === 'number' && pinTotal > PIN_CEILING) pins = null;
+        else if (pinTotal === 0) pins = [];
+        else {
+          what = 'Pins';
+          const got = await ws.api.allUpTo('pin', PIN_CEILING, undefined, c.signal);
+          if (!live()) return stopped();
+          if (got.over) pins = null;
+          else {
+            ws.store.put('pin', got.rows);
+            ws.done.add('pins');
+            pins = got.rows;
+            ws.readAt = Date.now();
+          }
+        }
+        const readAt = (ws.readAt ??= Date.now());
+
+        // The rows as the count copies them, each with its type; the Maps and Pins as the method reads them.
+        const rows: Row[] = [];
+        for (const t of plan.types) for (const r of ws.countRows.get(t) ?? []) rows.push({ ...r, type: t });
+        const maps = ws.store.ofType('map');
+        const space: Row[] = [...maps.map((m) => ({ ...m, type: 'map' })), ...(pins ?? []).map((p) => ({ ...p, type: 'pin', map: linkId(p.map) ?? p.map }))];
+        n = rows.length;
+        laying = true;
+        tick();
+
+        // The hold: none when asked to lay out from nothing; a hold that cannot be read is none, said.
+        let key: string | null = null;
+        let hold: HoldRead = { state: 'none' };
+        try {
+          key = holdKey(ws.id, ws.rung, await this.whoReads(ws));
+        } catch {
+          hold = { state: 'no-store' };
+        }
+        if (key && !fromNothing) hold = await readHold(openHolds, key);
+        if (!live()) return stopped();
+        const held = hold.state === 'held' ? flatHold(hold.held) : null;
+
+        const answer = await layOutOffPage({ rows, space, rung: ws.rung, held }, c.signal);
+        if (!live()) return stopped();
+        clearInterval(timer);
+        if (!answer.ids.length) return say('note empty3d', EMPTY_LINE);
+
+        const rounded = roundPoints(answer.points);
+        const from: 'nothing' | 'kept' | 'lost' = answer.heldUsed ? 'kept' : hold.state === 'lost' || answer.refused ? 'lost' : 'nothing';
+        const notes: string[] = [UNSAVED_LINE, CHANGE_LINE, readAtWords(new Date(readAt))];
+        if (pins === null) notes.push(NO_PLATE_LINE);
+        if (hold.state === 'no-store') notes.push(NO_STORE_LINE);
+        if (ws.reader !== 'public') notes.push('Elements marked hidden are drawn as Pins without links, as the OnlyWorlds graph rules have it.');
+        let buildMs: number;
+        try {
+          buildMs = this.drawLayout(ws, rows, answer.ids, rounded, from === 'kept' ? keptWords(answer.fresh) : from === 'lost' ? LOST_LINE : FRESH_LINE, notes, () => void run(true));
+        } catch (err) {
+          console.error(err);
+          return say('failure', FAILED_LINE, tryAgain());
+        }
+        this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded] };
+
+        // Keep the picture still for the next press: the rounded points in the answer's own frame.
+        if (key && hold.state !== 'no-store') {
+          const kept = await keepHold(openHolds, encodeHold(key, answer.ids, rounded, Date.now()));
+          if (!kept && gen === this.gen && ctl === c && this.map) {
+            notes.push(NOT_KEPT_LINE);
+            this.map.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: null });
+          }
+        }
+      } catch (err) {
+        if (!mine()) return;
+        if (err instanceof LayoutFailure) {
+          console.error(`by-links-3d: ${err.message}`);
+          return say('failure', FAILED_LINE, tryAgain());
+        }
+        const f = asFailure(err);
+        if (f.kind === 'stopped') return stopped();
+        if (f.kind === 'ended') return;
+        say('failure', failureWords(f, what), tryAgain());
+      } finally {
+        clearInterval(timer);
+        leave.removeEventListener('abort', stopOnLeave);
+      }
+    };
+    await run(false);
+  }
+
+  /**
+   * The answer drawn: the made-up Map and Pins in a slice built by hand (the served Maps beside it,
+   * no Markers, no Zones, no ground), through `readMap` and `build`. Nothing enters the world store,
+   * so the world's maps list and its Pin counts never see it. Answers the builder's milliseconds.
+   */
+  private drawLayout(ws: WorldState, rows: Row[], ids: string[], rounded: Float64Array, holdLine: string, notes: string[], again: () => void): number {
+    const byId = new Map<string, Row>();
+    for (const r of rows) byId.set(r.id, r);
+    const made = madeUp(ids, rounded, (id) => {
+      const t = byId.get(id)?.type;
+      return typeof t === 'string' ? t : null;
+    });
+    const maps = [...ws.store.ofType('map'), made.map];
+    const reading: MapReading = { ...readMap(made.map, maps), words: KIND_WORDS };
+    const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: rows, pinned: [...ids] };
+    const scene = build({ slice, reading, ground: null, rung: ws.rung, complete: true, pictureSize: null, versionOf: () => 1 }, new GraphCache());
+
+    this.map?.destroy();
+    clear(this.page);
+    this.page.className = 'page full';
+    const pinById = new Map<string, Row>();
+    for (const p of made.pins) pinById.set(p.id, p);
+    const host = {
+      world: { id: ws.id, name: ws.meta.name },
+      waymarkReader: waymarkReader(ws),
+      writer: this.writer,
+      measure: this.writer.current().measure,
+      infoOf: (id: string): ElementInfo => {
+        const b = byId.get(id);
+        if (!b) return { id, type: null, name: null, hidden: false, knownOf: false };
+        return { id, type: typeof b.type === 'string' ? b.type : null, name: str(b, 'name'), hidden: b.hidden === true, knownOf: b.known_of === true };
+      },
+      pinRow: (id: string) => pinById.get(id),
+      pictureSized: () => {},
+      back: () => {
+        if (this.writer.depth() > 0) history.back();
+        else this.go({ ...HOME, world: ws.id });
+      },
+    };
+    const mv = new MapView(host, this.page, reading, null, { at: null, element: null, flat: this.writer.current().view === 'flat', positions: false });
+    this.map = mv;
+    mv.setExtra(h('p', { class: 'held3d' }, holdLine, ' ', button(AGAIN_BUTTON, again, { class: 'again3d' })));
+    mv.setScene(scene);
+    mv.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: null });
+    return scene.ms;
   }
 
   // ---- one element's maps
@@ -1039,6 +1301,7 @@ export class App {
             calls++;
           }, undefined, signal);
           ws.countRows.set(type, rows);
+          ws.readAt = Date.now();
         }
       } catch (err) {
         clearInterval(longTimer);

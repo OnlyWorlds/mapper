@@ -190,6 +190,14 @@ label { font-weight: 600; font-size: 0.95rem; }
 button.signin { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; margin: 0.3rem 0; }
 button.signin:hover { border-color: var(--text); }
 
+/* The world laid out by its links in 3D: the press on the world's page, its running page, its line on the map. */
+.links3d-offer { margin-top: 1.6rem; }
+.links3d-offer h2 { font-size: 1.05rem; margin-bottom: 0.3rem; }
+.links3d .status-page p, .links3d-offer p { overflow-wrap: anywhere; }
+.cancel-row { margin: 0.4rem 0; }
+.held3d { margin: 0.1rem 0; }
+.held3d button { margin-left: 0.2rem; }
+
 /* A phone: the map fills the screen, the card and the list are sheets from the bottom. */
 @media (max-width: 640px) {
   .top { top: 6px; left: 6px; right: 6px; }
