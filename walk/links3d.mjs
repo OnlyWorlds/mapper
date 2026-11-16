@@ -10,7 +10,7 @@ import { serve } from './serve.mjs';
 const UNSAVED = 'Not saved: the mapper writes nothing. Atlas saves a layout.';
 const CHANGE = 'The method is not final; this device keeps the picture still meanwhile.';
 const FRESH = 'Laid out from nothing.';
-const LOST = 'The last picture could not be kept, so this one was laid out from nothing.';
+const LOST = 'No kept picture could be used, so this one was laid out from nothing.';
 const kept = (n) => `Kept the picture you last saw here; ${n} placed new.`;
 const CEILING = 'This world holds more than 10,000 elements you can see, too many for the mapper to lay out here.';
 const NO_PLATE = 'The world’s map was too large to use (more than 10,000 Pins), so this picture has no plate: its pinned elements are laid out with the rest.';

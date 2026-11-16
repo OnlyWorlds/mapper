@@ -883,7 +883,7 @@ export class App {
         h('h1', {}, HEAD),
         this.readerNote(ws),
         h('p', { class: 'note' }, UNSAVED_LINE),
-        h('p', { class: 'note' }, ws.reader === 'public' ? CHANGE_LINE : CHANGE_PAGE_LINE),
+        h('p', { class: 'note' }, CHANGE_BARE_LINE),
         box));
       return box;
     };

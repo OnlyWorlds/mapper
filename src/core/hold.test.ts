@@ -169,6 +169,28 @@ describe('keeping and reading', () => {
     expect((await readHold(never, k, c.signal, 60_000)).state).toBe('lost');
   });
 
+  it('a budget step that never answers holds the keep no longer than its wait', async () => {
+    const k = holdKey(W, 'public', { reader: 'public' });
+    const stuck: HoldBackend = { ...memory(), list: () => new Promise(() => {}) };
+    const t0 = Date.now();
+    expect(await keepHold(async () => stuck, encodeHold(k, ['a'], [1, 2, 3], 1), 50)).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('a read already stopped leaves no rejection unhandled', async () => {
+    const c = new AbortController();
+    c.abort();
+    const seen: unknown[] = [];
+    const on = (e: unknown) => seen.push(e);
+    const proc = (globalThis as unknown as { process: { on(e: string, f: (x: unknown) => void): void; off(e: string, f: (x: unknown) => void): void } }).process;
+    proc.on('unhandledRejection', on);
+    const late = () => new Promise<HoldBackend>((_, no) => setTimeout(() => no(new Error('late-reject')), 20));
+    expect((await readHold(late, holdKey(W, 'public', { reader: 'public' }), c.signal)).state).toBe('lost');
+    await new Promise((ok) => setTimeout(ok, 60));
+    proc.off('unhandledRejection', on);
+    expect(seen).toEqual([]);
+  });
+
   it('a keep that never answers is not kept, within its wait', async () => {
     const k = holdKey(W, 'public', { reader: 'public' });
     const t0 = Date.now();

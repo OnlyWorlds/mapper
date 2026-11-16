@@ -99,7 +99,11 @@ const LATE = Symbol('late');
 /** `p`, or LATE once `ms` pass or `signal` aborts, whichever comes first (`p` is left to settle alone). */
 function within<T>(p: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | typeof LATE> {
   return new Promise((ok, no) => {
-    if (signal?.aborted) return ok(LATE);
+    if (signal?.aborted) {
+      // Answered at once; a late rejection of `p` is still caught, never left unhandled.
+      p.catch(() => {});
+      return ok(LATE);
+    }
     const end = () => {
       clearTimeout(t);
       signal?.removeEventListener('abort', end);
@@ -161,10 +165,13 @@ export async function keepHold(open: () => Promise<HoldBackend>, value: HoldValu
     return false;
   }
   try {
-    const all = await b.list();
+    // The budget waits no longer than the write did: a storage that stops answering here only
+    // leaves one picture too many until the next keep.
+    const all = await within(b.list(), ms);
+    if (all === LATE) return true;
     const old = all.filter((h) => h.key !== value.key).sort((x, y) => x.at - y.at);
     const over = all.length - HOLD_BUDGET;
-    for (const h of old.slice(0, Math.max(0, over))) await b.delete(h.key);
+    for (const h of old.slice(0, Math.max(0, over))) if ((await within(b.delete(h.key), ms)) === LATE) return true;
   } catch {
     /* kept; the budget is tried again at the next write */
   }
