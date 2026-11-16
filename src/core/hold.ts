@@ -1,8 +1,9 @@
-// The hold: the last picture's points, kept on this device so the next press keeps it still. Per
-// world, reader rung and who reads (the account's login, a pasted key's short hash, or the public),
-// in the answer's own frame, rounded to whole units. Pure: the storage is a backend handed in
-// (IndexedDB in the page, net/holds.ts; a plain one in the tests). A hold that cannot be read, or
-// whose value is not one this page wrote, is none.
+// The hold: the last picture's points, kept so the next press keeps it still. Per world, reader rung
+// and who reads (the account's login, a pasted key's short hash, or the public), in the answer's own
+// frame, rounded to whole units. The public's holds are kept on this device (IndexedDB,
+// net/holds.ts); an account's or a key's only in the page's memory (pageHolds), so they never
+// outlive the page. Pure: the storage is a backend handed in. A hold that cannot be read, or whose
+// value is not one this page wrote, is none.
 import type { ReaderRung } from './scene';
 
 /** At most this many holds on a device, the least recently written dropped first. */
@@ -90,19 +91,56 @@ export function unflatHold(flat: { ids: readonly string[]; xyz: Float64Array }):
 /** What reading a hold found: one, none, or something that could not be read (said in one line). */
 export type HoldRead = { state: 'held'; held: Map<string, Float64Array> } | { state: 'none' } | { state: 'lost' } | { state: 'no-store' };
 
-export async function readHold(open: () => Promise<HoldBackend>, key: string): Promise<HoldRead> {
-  let b: HoldBackend;
+/** How long a storage step may take before the press goes on without it. */
+export const HOLD_WAIT_MS = 2000;
+
+const LATE = Symbol('late');
+
+/** `p`, or LATE once `ms` pass or `signal` aborts, whichever comes first (`p` is left to settle alone). */
+function within<T>(p: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | typeof LATE> {
+  return new Promise((ok, no) => {
+    if (signal?.aborted) return ok(LATE);
+    const end = () => {
+      clearTimeout(t);
+      signal?.removeEventListener('abort', end);
+      ok(LATE);
+    };
+    const t = setTimeout(end, ms);
+    signal?.addEventListener('abort', end, { once: true });
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        signal?.removeEventListener('abort', end);
+        ok(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        signal?.removeEventListener('abort', end);
+        no(e);
+      },
+    );
+  });
+}
+
+/**
+ * The hold for `key`. A storage that does not answer within `ms`, or a press stopped meanwhile, is
+ * read as a hold that could not be read: the press lays out from nothing and never waits on storage.
+ */
+export async function readHold(open: () => Promise<HoldBackend>, key: string, signal?: AbortSignal, ms = HOLD_WAIT_MS): Promise<HoldRead> {
+  let b: HoldBackend | typeof LATE;
   try {
-    b = await open();
+    b = await within(open(), ms, signal);
   } catch {
     return { state: 'no-store' };
   }
+  if (b === LATE) return { state: 'lost' };
   let raw: unknown;
   try {
-    raw = await b.get(key);
+    raw = await within(b.get(key), ms, signal);
   } catch {
     return { state: 'lost' };
   }
+  if (raw === LATE) return { state: 'lost' };
   if (raw === undefined || raw === null) return { state: 'none' };
   const held = decodeHold(raw, key);
   return held ? { state: 'held', held } : { state: 'lost' };
@@ -110,13 +148,15 @@ export async function readHold(open: () => Promise<HoldBackend>, key: string): P
 
 /**
  * Keep a hold, then drop the least recently written past the budget (never the one just written).
- * False when it could not be kept (no storage, refused, full): the picture stays, and one line says so.
+ * False when it could not be kept (no storage, refused, full, or no answer within `ms`): the picture
+ * stays, and one line says so.
  */
-export async function keepHold(open: () => Promise<HoldBackend>, value: HoldValue): Promise<boolean> {
-  let b: HoldBackend;
+export async function keepHold(open: () => Promise<HoldBackend>, value: HoldValue, ms = HOLD_WAIT_MS): Promise<boolean> {
+  let b: HoldBackend | typeof LATE;
   try {
-    b = await open();
-    await b.put(value.key, value);
+    b = await within(open(), ms);
+    if (b === LATE) return false;
+    if ((await within(b.put(value.key, value), ms)) === LATE) return false;
   } catch {
     return false;
   }
@@ -131,26 +171,36 @@ export async function keepHold(open: () => Promise<HoldBackend>, value: HoldValu
   return true;
 }
 
-/** Sign-out: every hold that is not the public's is dropped (they name what an account or key read). */
-export async function dropNonPublic(open: () => Promise<HoldBackend>): Promise<number> {
-  let all: { key: string }[];
-  let b: HoldBackend;
-  try {
-    b = await open();
-    all = await b.list();
-  } catch {
-    return 0;
-  }
-  // One try per key: a delete that fails never keeps the others.
-  let n = 0;
-  for (const h of all) {
-    if (isPublicKey(h.key)) continue;
-    try {
-      await b.delete(h.key);
-      n++;
-    } catch {
-      /* tried; the next load tries again */
-    }
-  }
-  return n;
+/**
+ * The holds kept in this page's memory only: an account's or a pasted key's, which name what that
+ * reader read. They are never written to the device, so nothing of them outlives the page (a close,
+ * a reload, a crash) and no other tab can read or drop them; a sign-out clears them.
+ */
+export interface PageHolds {
+  open: () => Promise<HoldBackend>;
+  clear(): void;
+}
+
+export function pageHolds(): PageHolds {
+  const points = new Map<string, HoldValue>();
+  const backend: HoldBackend = {
+    async get(key) {
+      return points.get(key);
+    },
+    async put(key, value) {
+      points.set(key, value);
+    },
+    async list() {
+      return [...points.values()].map((v) => ({ key: v.key, at: v.at }));
+    },
+    async delete(key) {
+      points.delete(key);
+    },
+  };
+  return { open: async () => backend, clear: () => points.clear() };
+}
+
+/** The storage for a key: the device's for the public's holds, the page's memory for every other. */
+export function holdsFor(key: string, device: () => Promise<HoldBackend>, page: PageHolds): () => Promise<HoldBackend> {
+  return isPublicKey(key) ? device : page.open;
 }

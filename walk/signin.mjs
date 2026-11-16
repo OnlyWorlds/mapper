@@ -461,22 +461,31 @@ const settled = (page) => page.waitForFunction(() => !window.__old && !!window._
       check(`${L}: the page never scrolls sideways on a phone`, w.page <= w.vw, JSON.stringify(w));
     }
 
-    // The world laid out in 3D as the account: its picture is kept under the account's own key.
+    // The world laid out in 3D as the account: its picture is kept in the page's memory only, never
+    // on the device, so nothing of it outlives the page (a close, a reload) or reaches another tab.
     const ownKey = `${SALT}|owner|account:wren`;
     const pubKey = `${M}|public|public`;
-    await page.evaluate((u) => {
-      history.pushState(null, '', u);
+    const to = (u) => page.evaluate((x) => {
+      history.pushState(null, '', x);
       dispatchEvent(new PopStateEvent('popstate'));
-    }, `/?world=${SALT}&layout=by-links-3d`);
+    }, u);
+    await to(`/?world=${SALT}&layout=by-links-3d`);
     await page.waitForFunction(() => !!window.__mapper.links3d && window.__mapper.scene?.complete, null, { timeout: 30_000 });
     await page.waitForTimeout(300);
+    const first = await page.evaluate(() => window.__mapper.links3d.from);
     await plantHold(page, pubKey);
     const held = await holdKeys(page);
-    check(`${L}: the world laid out in 3D as the account keeps its picture under the account's key`, JSON.stringify(held) === JSON.stringify([ownKey, pubKey].sort()), JSON.stringify(held));
-    await page.evaluate(() => {
-      history.pushState(null, '', '/');
-      dispatchEvent(new PopStateEvent('popstate'));
-    });
+    check(`${L}: the world laid out in 3D as the account writes nothing of it to the device`, JSON.stringify(held) === JSON.stringify([pubKey]), JSON.stringify(held));
+    const said3d = await page.locator('.status').first().innerText();
+    check(`${L}: and says this page keeps the picture, not this device`, said3d.includes('this page keeps the picture still') && !said3d.includes('this device keeps'), said3d.slice(0, 300));
+    // Away and back in the same page: the account's picture is kept still.
+    await to(`/?world=${SALT}`);
+    await page.waitForSelector('.links3d-offer button.links3d-press', { timeout: 15_000 });
+    await to(`/?world=${SALT}&layout=by-links-3d`);
+    await page.waitForFunction(() => window.__mapper.links3d?.from === 'kept' && window.__mapper.scene?.complete, null, { timeout: 30_000 }).catch(() => {});
+    const again = await page.evaluate(() => window.__mapper.links3d?.from);
+    check(`${L}: a second press in the same page keeps the account's picture still`, first === 'nothing' && again === 'kept', `${first} then ${again}`);
+    await to('/');
     await page.waitForSelector('.mine .world-row');
 
     // Sign out: the token removed by its id with itself as the bearer, the answer the read-back.
@@ -489,13 +498,12 @@ const settled = (page) => page.waitForFunction(() => !window.__old && !!window._
     check(`${L}: Sign out deletes the token by its id, the token the bearer, one call`, del.length === 1 && del[0].path === '/api/v2/account/tokens/tok-1' && del[0].bearer === token && !keel.calls.some((c) => c.path === '/api/v2/account/tokens/' && c.m === 'GET'));
     check(`${L}: and says it is removed, with the shared-computer line`, (await page.textContent('.said')).startsWith(SIGNED_OUT) && (await page.textContent('.said')).includes('sign out of onlyworlds.com too'));
     check(`${L}: the home is a stranger's again`, (await page.locator('.mine').count()) === 0 && (await demoNames(page)).length === 3 && (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 1);
-    // A reader's picture left on the device (a closed tab, a key) goes at the next page load.
-    await plantHold(page, ownKey);
+    // A reload keeps the public's picture and never wrote the account's.
     await page.reload();
     await page.waitForSelector('.demos .world-row');
     await page.waitForTimeout(300);
     const afterLoad = await holdKeys(page);
-    check(`${L}: a page load drops a kept account picture, and keeps the public's`, JSON.stringify(afterLoad) === JSON.stringify([pubKey]), JSON.stringify(afterLoad));
+    check(`${L}: after a reload the device holds the public's picture and nothing of the account's`, JSON.stringify(afterLoad) === JSON.stringify([pubKey]) && !afterLoad.includes(ownKey), JSON.stringify(afterLoad));
     check(`${L}: no page error`, errors.length === 0, errors.slice(0, 2).join(' | '));
     await ctx.close().catch(() => {});
   });

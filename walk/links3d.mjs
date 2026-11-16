@@ -250,6 +250,8 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   check(`${vp} links3d it reads each element type keel counts above 0 once, and the Pins no more`, JSON.stringify([...reads1].sort()) === JSON.stringify(['character', 'location']), JSON.stringify(reads1));
   const on3d = await waitUntil(page, () => window.__mapper.view3d?.state === 'on', null, 30_000);
   check(`${vp} links3d it opens in 3D`, on3d, JSON.stringify(await page.evaluate(() => window.__mapper.view3d)));
+  // Its third axis is the method's, not a height above a ground: no stems (thousands hid the Pins below).
+  check(`${vp} links3d draws no stems`, (await page.evaluate(() => window.__mapper.view3d?.stems)) === 0, JSON.stringify(await page.evaluate(() => window.__mapper.view3d)));
   await page.waitForTimeout(500);
   await snap('drawn');
   check(`${vp} links3d the address is unchanged by the drawing (no map, no camera)`, (await where()) === `?world=${LW}&layout=by-links-3d`, await where());
@@ -453,7 +455,9 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     await ctx.route(worker, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: "self.onmessage = () => self.postMessage({ ok: false, message: 'Error: played layout failure' });" }));
     await page.goto(`${base}/?world=${LW}&layout=by-links-3d`);
     await waitUntil(page, () => !!document.querySelector('.links3d .failure .retry'), null, 20_000);
-    check(`${vp} links3d a layout that throws says "This world could not be laid out." with Try again, kept in the console`, (await boxText()) === 'This world could not be laid out. Try again' && (await info()) === null && layoutErrors.some((e) => /played layout failure/.test(e)), `${await boxText()} | ${layoutErrors.join(' | ').slice(0, 200)}`);
+    // This world's picture is kept from the presses before, so the failed press had handed it in: a
+    // fresh layout is offered beside Try again, in case the kept picture is what failed.
+    check(`${vp} links3d a layout that throws says "This world could not be laid out." with Try again and a fresh one, kept in the console`, (await boxText()) === 'This world could not be laid out. Try again Lay out again from nothing' &&(await info()) === null && layoutErrors.some((e) => /played layout failure/.test(e)), `${await boxText()} | ${layoutErrors.join(' | ').slice(0, 200)}`);
     await ctx.unroute(worker);
     await page.locator('.links3d .failure .retry').click();
     await drawn();

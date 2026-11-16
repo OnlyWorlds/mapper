@@ -11,10 +11,10 @@ import { beginSignIn, canSignIn, resumeFrom, signInCallbackLine, type SignInOutc
 import { AddressWriter, type Address } from './core/address';
 import { DEMOS } from './core/demos';
 import { accountOrder, homeOrder, homeRow, roleWords, rungOf, type MapCard } from './core/home';
-import { dropNonPublic, encodeHold, flatHold, holdKey, keepHold, keyHash12, readHold, type HoldRead, type Who } from './core/hold';
+import { encodeHold, flatHold, holdKey, holdsFor, isPublicKey, keepHold, keyHash12, pageHolds, readHold, type HoldRead, type PageHolds, type Who } from './core/hold';
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
 import {
-  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
+  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_BARE_LINE, CHANGE_LINE, CHANGE_PAGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
   madeUp, NO_PLATE_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
   STOPPED_LINE, UNSAVED_LINE,
 } from './core/links3d';
@@ -82,6 +82,8 @@ export class App {
   readonly writer: AddressWriter;
   private gen = 0;
   private key: string | null = null;
+  /** The 3D pictures kept for an account or a key: in this page's memory only, never on the device. */
+  private holds: PageHolds = pageHolds();
   private keyWorld: string | null = null;
   private keyNote: string | null = null;
   private world: WorldState | null = null;
@@ -145,10 +147,6 @@ export class App {
 
   /** The first route: on the callback, only after the exchange's outcome, with nothing to press meanwhile. */
   async start(callback: Promise<SignInOutcome> | null): Promise<void> {
-    // No account or key reader survives a page load (the sign-in and a key live in this page's
-    // memory only), so the 3D pictures kept for them go before anything is read.
-    // A storage that never answers holds the first route back a second at most.
-    const dropped = Promise.race([dropNonPublic(openHolds), new Promise((ok) => setTimeout(ok, 1000))]);
     if (callback) {
       this.exchanging = true;
       this.teardown();
@@ -171,7 +169,6 @@ export class App {
         this.replaceAddress('/');
       }
     }
-    await dropped;
     await this.route();
   }
 
@@ -203,7 +200,7 @@ export class App {
     this.mine = null;
     this.homeMaps.clear();
     // The 3D pictures kept for an account or a key name what it read: they go with the sign-in.
-    if (s) void dropNonPublic(openHolds);
+    if (s) this.holds.clear();
     return s;
   }
 
@@ -226,8 +223,6 @@ export class App {
   pageHidden(): void {
     this.leaving = true;
     if (this.session) void revokeToken(this.session);
-    // The 3D pictures an account or a key read go with the page (tried; a reload drops them too).
-    void dropNonPublic(openHolds);
   }
 
   /** The page is shown again. Back from the back/forward cache it holds a token it revoked, so it signs out. */
@@ -733,6 +728,8 @@ export class App {
         const maps = await ws.api.all('map', undefined, undefined, undefined, signal);
         ws.store.put('map', maps);
         ws.done.add('maps');
+        // "Read at" names this tab's oldest read of the world, the Maps included.
+        ws.readAt ??= Date.now();
       } catch (err) {
         say(null, asFailure(err));
         return false;
@@ -756,6 +753,7 @@ export class App {
       const pins = await ws.api.all('pin', undefined, undefined, undefined, signal);
       ws.store.put('pin', pins);
       ws.done.add('pins');
+      ws.readAt ??= Date.now();
     }
     const counts = new Map<string, number>();
     for (const p of ws.store.ofType('pin')) {
@@ -885,7 +883,7 @@ export class App {
         h('h1', {}, HEAD),
         this.readerNote(ws),
         h('p', { class: 'note' }, UNSAVED_LINE),
-        h('p', { class: 'note' }, CHANGE_LINE),
+        h('p', { class: 'note' }, ws.reader === 'public' ? CHANGE_LINE : CHANGE_PAGE_LINE),
         box));
       return box;
     };
@@ -929,6 +927,7 @@ export class App {
         waitLine.textContent = l ?? '';
       };
       let what = 'maps';
+      let usedHold = false;
       try {
         let mapsFailed: ReadFailure | null = null;
         const okMaps = await this.ensureMaps(ws, (_l, f) => {
@@ -995,9 +994,13 @@ export class App {
         } catch {
           hold = { state: 'no-store' };
         }
-        if (key && !fromNothing) hold = await readHold(openHolds, key);
+        // A public hold is on the device, an account's or a key's in this page's memory; a storage
+        // that does not answer in time, or a Cancel meanwhile, never holds the press.
+        const store = key ? holdsFor(key, openHolds, this.holds) : null;
+        if (key && store && !fromNothing) hold = await readHold(store, key, c.signal);
         if (!live()) return stopped();
         const held = hold.state === 'held' ? flatHold(hold.held) : null;
+        usedHold = !!held;
 
         const answer = await layOutOffPage({ rows, space, rung: ws.rung, held }, c.signal);
         if (!live()) return stopped();
@@ -1006,7 +1009,10 @@ export class App {
 
         const rounded = roundPoints(answer.points);
         const from = pictureFrom(answer, hold.state);
-        const notes: string[] = [UNSAVED_LINE, CHANGE_LINE, readAtWords(new Date(readAt))];
+        // Where the picture is kept, said only where it is: the device's (the public's), this page's
+        // (an account's or a key's), or none when there is no storage (its own line says so).
+        const change = !key || hold.state === 'no-store' ? CHANGE_BARE_LINE : isPublicKey(key) ? CHANGE_LINE : CHANGE_PAGE_LINE;
+        const notes: string[] = [UNSAVED_LINE, change, readAtWords(new Date(readAt))];
         if (pins === null) notes.push(NO_PLATE_LINE);
         if (hold.state === 'no-store') notes.push(NO_STORE_LINE);
         let buildMs: number;
@@ -1021,9 +1027,10 @@ export class App {
         this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, plate: answer.how.filter((x) => x === 'map').length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded] };
 
         // Keep the picture still for the next press: the rounded points in the answer's own frame.
-        if (key && hold.state !== 'no-store') {
-          const kept = await keepHold(openHolds, encodeHold(key, answer.ids, rounded, Date.now()));
+        if (key && store && hold.state !== 'no-store') {
+          const kept = await keepHold(store, encodeHold(key, answer.ids, rounded, Date.now()));
           if (!kept && gen === this.gen && ctl === c && this.map) {
+            notes[notes.indexOf(change)] = CHANGE_BARE_LINE;
             notes.push(NOT_KEPT_LINE);
             this.map.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: null });
           }
@@ -1032,7 +1039,10 @@ export class App {
         if (!mine()) return;
         if (err instanceof LayoutFailure) {
           console.error(`by-links-3d: ${err.message}`);
-          return say('failure', FAILED_LINE, tryAgain());
+          // A layout that failed with a kept picture handed in may have failed on it: a fresh one is a press away.
+          return usedHold
+            ? say('failure', FAILED_LINE, tryAgain(), button(AGAIN_BUTTON, () => void run(true), { class: 'again3d' }))
+            : say('failure', FAILED_LINE, tryAgain());
         }
         const f = asFailure(err);
         if (f.kind === 'stopped') return stopped();

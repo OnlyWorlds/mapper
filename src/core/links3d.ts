@@ -116,6 +116,10 @@ export const OFFER_BUTTON = 'Lay out by links, in 3D';
 export const OFFER_WORDS = 'Draws the elements you can see, joined by their links, in 3D. It is drawn here and not saved: the mapper writes nothing to the world.';
 export const UNSAVED_LINE = 'Not saved: the mapper writes nothing. Atlas saves a layout.';
 export const CHANGE_LINE = 'The method is not final; this device keeps the picture still meanwhile.';
+/** An account's or a key's picture is kept in the page's memory only. */
+export const CHANGE_PAGE_LINE = 'The method is not final; this page keeps the picture still meanwhile.';
+/** Said where the picture is not kept (no storage, or the write failed): its own line says so. */
+export const CHANGE_BARE_LINE = 'The method is not final.';
 export const FRESH_LINE = 'Laid out from nothing.';
 export const AGAIN_BUTTON = 'Lay out again from nothing';
 export const LOST_LINE = 'The last picture could not be kept, so this one was laid out from nothing.';

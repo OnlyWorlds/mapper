@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeHold, dropNonPublic, encodeHold, flatHold, HOLD_BUDGET, holdKey, isPublicKey, keepHold, keyHash12, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
+import { decodeHold, encodeHold, flatHold, HOLD_BUDGET, holdKey, holdsFor, isPublicKey, keepHold, keyHash12, pageHolds, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
 
 const W = '0199c3a1-0000-7000-8000-00000000000a';
 
@@ -120,31 +120,62 @@ describe('keeping and reading', () => {
     expect([...b.rows.keys()].sort()).toEqual([key(3), key(5), key(6), key(7)].sort());
   });
 
-  it('sign-out drops every hold that is not the public one', async () => {
-    const b = memory();
+  it('only the public hold goes to the device; an account’s or a key’s stays in the page’s memory', async () => {
+    const device = memory();
+    const page = pageHolds();
     const pub = holdKey(W, 'public', { reader: 'public' });
     const own = holdKey(W, 'owner', { reader: 'account', login: 'ana' });
     const guest = holdKey(W, 'guest', { reader: 'key', hash12: '0123456789ab' });
-    for (const k of [pub, own, guest]) await keepHold(async () => b, encodeHold(k, ['a'], [1, 2, 3], 1));
-    expect(await dropNonPublic(async () => b)).toBe(2);
-    expect([...b.rows.keys()]).toEqual([pub]);
-    expect(await dropNonPublic(async () => Promise.reject(new Error('x')))).toBe(0);
+    for (const k of [pub, own, guest]) expect(await keepHold(holdsFor(k, async () => device, page), encodeHold(k, ['a'], [1, 2, 3], 1))).toBe(true);
+    expect([...device.rows.keys()]).toEqual([pub]);
+    for (const k of [own, guest]) expect((await readHold(holdsFor(k, async () => device, page), k)).state).toBe('held');
+    // A sign-out clears the page's holds; the device's public one stays.
+    page.clear();
+    for (const k of [own, guest]) expect((await readHold(holdsFor(k, async () => device, page), k)).state).toBe('none');
+    expect((await readHold(holdsFor(pub, async () => device, page), pub)).state).toBe('held');
+    // A new page (a reload, another tab) starts with none of them.
+    expect((await readHold(pageHolds().open, own)).state).toBe('none');
   });
 
-  it('a delete that fails never keeps the others: one try per key', async () => {
-    const b = memory();
-    const keys = [holdKey(W, 'owner', { reader: 'account', login: 'a' }), holdKey(W, 'owner', { reader: 'account', login: 'b' }), holdKey(W, 'guest', { reader: 'key', hash12: '0123456789ab' })];
-    for (const k of keys) await keepHold(async () => b, encodeHold(k, ['a'], [1, 2, 3], 1));
-    const real = b.delete;
-    let tries = 0;
-    b.delete = async (k) => {
-      tries++;
-      if (k === keys[0]) throw new Error('refused');
-      return real(k);
-    };
-    expect(await dropNonPublic(async () => b)).toBe(2);
-    expect(tries).toBe(3);
-    expect([...b.rows.keys()]).toEqual([keys[0]]);
+  it('the page’s holds keep the same budget, the least recently written dropped first', async () => {
+    const page = pageHolds();
+    const key = (i: number) => holdKey(W, 'owner', { reader: 'account', login: `a${i}` });
+    for (let i = 1; i <= HOLD_BUDGET + 2; i++) await keepHold(page.open, encodeHold(key(i), ['a'], [i, 0, 0], i * 10));
+    const b = await page.open();
+    expect((await b.list()).map((h) => h.key).sort()).toEqual([key(3), key(4), key(5), key(6)].sort());
+  });
+
+  it('a storage that never answers holds a read no longer than its wait, said as a hold that could not be read', async () => {
+    const never = () => new Promise<HoldBackend>(() => {});
+    const k = holdKey(W, 'public', { reader: 'public' });
+    const t0 = Date.now();
+    expect((await readHold(never, k, undefined, 50)).state).toBe('lost');
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // An open that answers but a get that never does.
+    const stuck: HoldBackend = { ...memory(), get: () => new Promise(() => {}) };
+    expect((await readHold(async () => stuck, k, undefined, 50)).state).toBe('lost');
+  });
+
+  it('a Cancel ends a hold read at once', async () => {
+    const never = () => new Promise<HoldBackend>(() => {});
+    const k = holdKey(W, 'public', { reader: 'public' });
+    const c = new AbortController();
+    const read = readHold(never, k, c.signal, 60_000);
+    setTimeout(() => c.abort(), 10);
+    const t0 = Date.now();
+    expect((await read).state).toBe('lost');
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // Already stopped: answers at once.
+    expect((await readHold(never, k, c.signal, 60_000)).state).toBe('lost');
+  });
+
+  it('a keep that never answers is not kept, within its wait', async () => {
+    const k = holdKey(W, 'public', { reader: 'public' });
+    const t0 = Date.now();
+    expect(await keepHold(() => new Promise<HoldBackend>(() => {}), encodeHold(k, ['a'], [1, 2, 3], 1), 50)).toBe(false);
+    const stuck: HoldBackend = { ...memory(), put: () => new Promise(() => {}) };
+    expect(await keepHold(async () => stuck, encodeHold(k, ['a'], [1, 2, 3], 1), 50)).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 
   it('a public key is the public rung and the public reader, part by part', () => {
