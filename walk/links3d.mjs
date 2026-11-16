@@ -25,6 +25,9 @@ const EMPTYW = '89898989-8989-7989-8989-898989898989'; // no element for this re
 const BIG = '8a8a8a8a-8a8a-7a8a-8a8a-8a8a8a8a8a8a'; // 12,001 served Characters by its counts
 const NOCOUNT = '8b8b8b8b-8b8b-7b8b-8b8b-8b8b8b8b8b8b'; // no counts served, 10,001 Characters
 const PINBIG = '8c8c8c8c-8c8c-7c8c-8c8c-8c8c8c8c8c8c'; // 20,000 Pins by its counts
+// A Map whose width is below 0 pinning three Locations: SDK 4.171.0's layout throws on it (a later
+// SDK makes such a Map no plate, and this case then expects a picture).
+const BENT = '8e8e8e8e-8e8e-7e8e-8e8e-8e8e8e8e8e8e';
 const SLOW = '8d8d8d8d-8d8d-7d8d-8d8d-8d8d8d8d8d8d'; // 2,000 Characters richly linked, for a Cancel while the layout runs
 const COAST = lid(LW, 1);
 const C = (n) => lid(LW, 100 + n);
@@ -102,6 +105,14 @@ function answer(url, state) {
     if (is('character')) return pick([{ id: lid(PINBIG, 11), type: 'character', name: 'One', friends: [lid(PINBIG, 12)] }, { id: lid(PINBIG, 12), type: 'character', name: 'Two' }, { id: lid(PINBIG, 13), type: 'character', name: 'Three' }]);
     return page1([]);
   }
+  if (w === BENT) {
+    const bent = lid(BENT, 1);
+    if (is('world')) return json(200, { id: BENT, name: 'Bent', counts: { total: 7, types: counts({ map: 1, pin: 3, location: 3 }) } });
+    if (is('map')) return pick([{ id: bent, type: 'map', name: 'Bent', width: -5, height: 100 }]);
+    if (is('pin')) return pick([1, 2, 3].map((n) => ({ id: lid(BENT, 20 + n), type: 'pin', map: bent, element_type: 'location', element_id: lid(BENT, 10 + n), x: 10 * n, y: 10 })));
+    if (is('location')) return pick([1, 2, 3].map((n) => ({ id: lid(BENT, 10 + n), type: 'location', name: `Bend ${n}` })));
+    return page1([]);
+  }
   if (w === SLOW) {
     if (is('world')) return json(200, { id: SLOW, name: 'Slow', counts: { total: 2000, types: counts({ character: 2000 }) } });
     if (is('character')) return page1((slowRows ??= many(SLOW, 2000, true)));
@@ -145,9 +156,12 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   const page = await ctx.newPage();
   page.on('request', (r) => all.push(`${r.method()} ${r.url()}`));
   const errors = [];
+  /** The layout's own errors, kept for the console by the page on purpose (the bent Map's case). */
+  const layoutErrors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
-    if (m.type() === 'error' && !/^Failed to load resource|CORS request did not succeed/.test(m.text())) errors.push(m.text());
+    if (m.type() === 'error' && m.text().startsWith('by-links-3d: ')) layoutErrors.push(m.text());
+    else if (m.type() === 'error' && !/^Failed to load resource|CORS request did not succeed/.test(m.text())) errors.push(m.text());
     if (/Content Security Policy|Content-Security-Policy/i.test(m.text())) errors.push(m.text());
   });
   const snap = (name) => page.screenshot({ path: `.scratch/shots/links3d-${which}-${vp}-${String(++shotN).padStart(2, '0')}-${name}.png` }).catch(() => {});
@@ -414,7 +428,18 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     check(`${vp} links3d Pins past their ceiling: drawn with no plate, said, and no Pin read`, (await statusText()).includes(NO_PLATE) && !sent.slice(from).some((u) => u.pathname.startsWith('/api/v2/pin')) && (await info())?.nodes === 3, (await statusText()).slice(0, 300));
   }
 
-  // 16. Nothing written: every request the page made was a GET, and nothing left for OnlyWorlds but reads.
+  if (!phone) {
+    // 16. A layout that throws (a served Map with a width below 0, on SDK 4.171.0): its words and Try
+    // again, the error kept in the console, nothing drawn.
+    await page.goto(`${base}/?world=${BENT}&layout=by-links-3d`);
+    await waitUntil(page, () => !!document.querySelector('.links3d .failure .retry'), null, 20_000);
+    check(`${vp} links3d a layout that throws says "This world could not be laid out." with Try again, kept in the console`, (await boxText()) === 'This world could not be laid out. Try again' && (await info()) === null && layoutErrors.some((e) => /negative area/.test(e)), `${await boxText()} | ${layoutErrors.join(' | ').slice(0, 200)}`);
+    await page.locator('.links3d .failure .retry').click();
+    await waitUntil(page, () => !!document.querySelector('.links3d .failure .retry'), null, 20_000);
+    check(`${vp} links3d its Try again lays out again, and says the same while the method throws`, (await boxText()) === 'This world could not be laid out. Try again' && layoutErrors.length === 2, `${layoutErrors.length} errors`);
+  }
+
+  // 17. Nothing written: every request the page made was a GET, and nothing left for OnlyWorlds but reads.
   const notGet = all.filter((r) => !r.startsWith('GET '));
   check(`${vp} links3d every request is a GET (${all.length} requests)`, notGet.length === 0, notGet.slice(0, 3).join(' | '));
   if (process.env.SHOW) for (const r of [...new Set(all.map((x) => x.replace(/\?.*$/, '')))]) console.log(`    request ${r}`);
