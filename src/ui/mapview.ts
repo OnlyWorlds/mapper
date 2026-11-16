@@ -849,7 +849,7 @@ export class MapView implements ModeHost {
     this.dpr = window.devicePixelRatio || 1;
     this.renderer.resize(this.view, this.dpr);
     if (this.surface) {
-      this.surface.resize(this.view, this.dpr);
+      this.surface.resize(this.view, this.dpr, this.topInset());
       this.fit3d();
     }
     if (this.camera && this.scene && !this.personMoved && !this.at && !this.focus) {

@@ -497,13 +497,17 @@ for (const [vp, opts] of [
     const px = colourStats(decodePng(shotBuf));
     check(`${vp} 3D: the canvas holds a drawing (colours, ground)`, px.colours > 60 && px.unlike > 0.15, JSON.stringify(px));
     await snap('3d');
-    // A Pin standing clear of the bar, the zoom buttons and the card's side.
+    // A Pin standing clear of the bar, the zoom buttons and the card's side, and of every other Pin
+    // (a press in a crowd selects whichever is drawn on top).
     const vw = page.viewportSize();
     const pins = await mapper(() => window.__mapper.pins());
+    const seen = [];
+    for (const p of pins) seen.push(await mapper((id) => window.__mapper.screenOf(id), p.id));
+    const alone = (pt) => seen.every((q) => !q || q === pt || Math.hypot(q.x - pt.x, q.y - pt.y) >= 20);
     let target = null;
-    for (const p of pins) {
-      const pt = await mapper((id) => window.__mapper.screenOf(id), p.id);
-      if (pt && pt.x > 40 && pt.x < vw.width * (phone ? 0.85 : 0.55) && pt.y > vw.height * 0.35 && pt.y < vw.height * (phone ? 0.5 : 0.85)) {
+    for (const [i, p] of pins.entries()) {
+      const pt = seen[i];
+      if (pt && alone(pt) && pt.x > 40 && pt.x < vw.width * (phone ? 0.85 : 0.55) && pt.y > vw.height * 0.35 && pt.y < vw.height * (phone ? 0.8 : 0.85)) {
         const near = await mapper(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y]);
         if (String(near).includes('surface-3d')) {
           target = { ...p, ...pt };
@@ -640,34 +644,50 @@ for (const [vp, opts] of [
     await page.waitForFunction(() => window.__mapper.view3d?.state === 'on' && window.__mapper.view3d?.picture, null, { timeout: 30_000 });
     await page.waitForTimeout(300);
     const vw = page.viewportSize();
-    const clear = async (pt) => pt && pt.x > 30 && pt.x < vw.width * (phone ? 0.9 : 0.6) && pt.y > vw.height * 0.3 && pt.y < vw.height * (phone ? 0.5 : 0.9) && String(await mapper(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y])).includes('surface-3d');
+    const clear = async (pt) => pt && pt.x > 30 && pt.x < vw.width * (phone ? 0.9 : 0.6) && pt.y > vw.height * 0.3 && pt.y < vw.height * (phone ? 0.8 : 0.9) && String(await mapper(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y])).includes('surface-3d');
     // A Pin buried under the ground (z below 750), pressed from above.
     const pins = await mapper(() => window.__mapper.pins());
+    const seen = [];
+    for (const p of pins) seen.push(await mapper((id) => window.__mapper.screenOf(id), p.id));
+    const alone = (pt) => seen.every((q) => !q || q === pt || Math.hypot(q.x - pt.x, q.y - pt.y) >= 20);
+    const shot3d = decodePng(await page.screenshot());
+    const dpr = shot3d.w / vw.width;
+    const at = (png, x, y) => {
+      const i = (Math.round(y * dpr) * png.w + Math.round(x * dpr)) * 4;
+      return [png.data[i], png.data[i + 1], png.data[i + 2]];
+    };
+    // A dot's pixels in a 5 by 5 block at its centre: a line or another Pin's label standing nearer the
+    // camera may cross the dot (that is 3D), so the read counts the block's pixels in the Pin's colour.
+    const hex = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
+    const colourOf = (q) => {
+      const want = GROUP_COLORS[q.style.slice(4)]?.light;
+      let n = 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const got = at(shot3d, q.x + dx, q.y + dy);
+        if (want && got.reduce((a, v, k) => a + Math.abs(v - hex(want)[k]), 0) < 60) n++;
+      }
+      return { want, n };
+    };
+    // The first clear buried Pin whose dot shows its colour (a ground drawn over the buried hides every
+    // one, so the check still reds), else the first clear one.
     let buried = null;
-    for (const p of pins.filter((q) => q.z < 750)) {
-      const pt = await mapper((id) => window.__mapper.screenOf(id), p.id);
-      if (await clear(pt)) {
-        buried = { ...p, ...pt };
-        break;
+    let first = null;
+    for (const [i, p] of pins.entries()) {
+      if (p.z >= 750) continue;
+      const pt = seen[i];
+      if (pt && alone(pt) && (await clear(pt))) {
+        const q = { ...p, ...pt };
+        first ??= q;
+        if (colourOf(q).n >= 5) {
+          buried = q;
+          break;
+        }
       }
     }
+    buried ??= first;
     check(`${vp} 3D: a buried Pin stands clear to press`, !!buried, `${pins.filter((q) => q.z < 750).length} buried`);
     if (buried) {
-      const shot3d = decodePng(await page.screenshot());
-      const dpr = shot3d.w / vw.width;
-      const at = (png, x, y) => {
-        const i = (Math.round(y * dpr) * png.w + Math.round(x * dpr)) * 4;
-        return [png.data[i], png.data[i + 1], png.data[i + 2]];
-      };
-      // Its dot's pixels in a 5 by 5 block at its centre: a line or a label standing nearer the camera
-      // may cross the dot (that is 3D), so the read counts the block's pixels in the Pin's colour.
-      const want = GROUP_COLORS[buried.style.slice(4)]?.light;
-      const hex = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
-      let inColour = 0;
-      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-        const got = at(shot3d, buried.x + dx, buried.y + dy);
-        if (want && got.reduce((a, v, k) => a + Math.abs(v - hex(want)[k]), 0) < 60) inColour++;
-      }
+      const { want, n: inColour } = colourOf(buried);
       check(`${vp} 3D: a buried Pin is drawn over the ground in its own colour`, inColour >= 5, `${inColour} of 25 pixels in ${want}`);
       if (inColour < 5) await page.screenshot({ path: `.scratch/shots/played-${which}-${vp}-buried-crop.png`, clip: { x: buried.x - 30, y: buried.y - 30, width: 60, height: 60 } });
       await press(buried.x, buried.y);

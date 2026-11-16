@@ -253,6 +253,38 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   // Its third axis is the method's, not a height above a ground: no stems (thousands hid the Pins below).
   check(`${vp} links3d draws no stems`, (await page.evaluate(() => window.__mapper.view3d?.stems)) === 0, JSON.stringify(await page.evaluate(() => window.__mapper.view3d)));
   await page.waitForTimeout(500);
+  // The fit centres the picture in what the overlays leave free, not on the whole screen: the middle
+  // of the Pins' height on screen stands within a tenth of the free part's height of its middle
+  // (on a phone the old fit put it about 28% too high, under the status card).
+  const centring = () => page.evaluate(() => {
+    const top = [...document.querySelectorAll('.top')].filter((e) => e.getClientRects().length).pop();
+    const canvas = document.querySelector('canvas.surface-3d')?.getBoundingClientRect();
+    if (!top || !canvas) return null;
+    const ys = window.__mapper.pins().map((p) => window.__mapper.pointOf(p.x, p.y, p.z)).filter(Boolean).map((q) => q.y - canvas.top);
+    if (!ys.length) return null;
+    const free0 = top.getBoundingClientRect().bottom - canvas.top;
+    const mid = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const freeMid = (free0 + canvas.height) / 2;
+    return { mid: Math.round(mid), freeMid: Math.round(freeMid), low: Math.round(Math.max(...ys)), h: Math.round(canvas.height), off: Math.round((100 * Math.abs(mid - freeMid)) / (canvas.height - free0)) };
+  });
+  const centred = await centring();
+  check(`${vp} links3d the picture stands in the middle of what the overlays leave free`, !!centred && centred.off <= 10, JSON.stringify(centred));
+  if (phone) {
+    // Fit pressed, then the phone turned on its side: the fit's centring follows the new overlay
+    // (a lift kept from the upright view put the picture at the canvas's foot; the S612 code gate's M1).
+    const upright = page.viewportSize();
+    // A person's move first (a zoom), so the resize keeps the camera and does not fit again.
+    await page.locator('button[aria-label="Zoom in"]').click();
+    await page.waitForTimeout(300);
+    await page.locator('button[aria-label="Fit the map"]').click();
+    await page.setViewportSize({ width: upright.height, height: upright.width });
+    await page.waitForTimeout(600);
+    const sideways = await centring();
+    check(`${vp} links3d after Fit and a turn on its side, the picture stays in the middle of what the overlays leave free`, !!sideways && sideways.off <= 12 && sideways.low < sideways.h - 8, JSON.stringify(sideways));
+    await snap('sideways');
+    await page.setViewportSize(upright);
+    await page.waitForTimeout(400);
+  }
   await snap('drawn');
   check(`${vp} links3d the address is unchanged by the drawing (no map, no camera)`, (await where()) === `?world=${LW}&layout=by-links-3d`, await where());
   if (!phone) console.log(`  links3d ${which} measure: Linkwater, ${first?.nodes} elements: layout in the worker ${first?.layoutMs?.toFixed(1)} ms, build ${first?.buildMs?.toFixed(1)} ms`);

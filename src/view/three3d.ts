@@ -153,6 +153,8 @@ export class Surface3D implements Projector {
   private disposed = false;
   /** The camera's matrices as last rendered, for projections between renders. */
   private projDirty = true;
+  /** CSS pixels the projection's centre sits below the view's: half the overlay at the top, so a fit centres the picture in what the overlays leave free. */
+  private lift = 0;
   draws = 0;
   lastDrawMs = 0;
   drewPicture = false;
@@ -211,13 +213,28 @@ export class Surface3D implements Projector {
     this.frame3 = frame;
   }
 
-  resize(view: View, dpr: number): void {
+  /** `top`, the overlay's height now: a fit's lift follows it, so a turned view keeps its place in the free part. */
+  resize(view: View, dpr: number, top?: number): void {
     this.view = view;
+    if (this.lift > 0 && top !== undefined) this.lift = this.liftFor(top);
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(view.w, view.h, false);
     this.camera.aspect = view.w / Math.max(1, view.h);
+    this.offset();
     this.camera.updateProjectionMatrix();
     this.projDirty = true;
+  }
+
+  /** Half the overlay's height, the overlay held to 70% of the view as the fit's `free` is. */
+  private liftFor(top: number): number {
+    return Math.max(0, Math.min(top, this.view.h * 0.7)) / 2;
+  }
+
+  /** The projection's centre moved down by `lift`; every screen read goes through the same matrix. */
+  private offset(): void {
+    const { w, h } = this.view;
+    if (this.lift > 0) this.camera.setViewOffset(w, h, 0, -this.lift, w, h);
+    else this.camera.clearViewOffset();
   }
 
   /** The frame's centre and its half-diagonal: what a fit shows. */
@@ -246,6 +263,9 @@ export class Surface3D implements Projector {
     const vfov = (FOV * Math.PI) / 180;
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
     const free = Math.max(0.3, 1 - top / Math.max(1, this.view.h));
+    // The frame's centre stands at the centre of the free part, below the overlays, not of the screen.
+    this.lift = this.liftFor(top);
+    this.offset();
     const d = (r / Math.sin(Math.min(vfov * free, hfov) / 2)) * 0.92;
     const el = (32 * Math.PI) / 180;
     this.controls.target.copy(c);
@@ -279,6 +299,12 @@ export class Surface3D implements Projector {
 
   /** Move the camera and its target together so the point stands at the view's centre. */
   centreOn(x: number, y: number, z: number): void {
+    // The view's own centre: the lift is the whole frame's fit, and a placed point keeps its own rule.
+    if (this.lift !== 0) {
+      this.lift = 0;
+      this.offset();
+      this.projDirty = true;
+    }
     const off = this.camera.position.clone().sub(this.controls.target);
     this.controls.target.set(x, y, z);
     this.camera.position.set(x, y, z).add(off);
