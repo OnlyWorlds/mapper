@@ -70,13 +70,16 @@ for (const [vp, opts] of [
     await page.waitForTimeout(500);
     const zones = (await page.evaluate(() => window.__mapper.scene?.counts.zones)) ?? 0;
     check(`${vp} ${name}: the layout opens in 3D with its ground drawn${bare ? ' (Zones only: no picture, said)' : ''}`, on && pic && (!bare || zones > 0), JSON.stringify(await page.evaluate(() => window.__mapper.view3d)));
-    // A Pin on the map, clear of the bar and the buttons, pressed.
+    // A Pin on the map, clear of the bar and the buttons and of every other Pin (12 px, more than a dot; a press in a crowd
+    // selects whichever is drawn on top), pressed.
     const vw = page.viewportSize();
     const pins = await page.evaluate(() => window.__mapper.pins());
+    const seen = await page.evaluate((ids) => ids.map((id) => window.__mapper.screenOf(id)), pins.map((p) => p.id));
+    const alone = (pt) => seen.every((q) => !q || q === pt || Math.hypot(q.x - pt.x, q.y - pt.y) >= 12);
     let hit = null;
-    for (const p of pins.slice(0, 400)) {
-      const pt = await page.evaluate((id) => window.__mapper.screenOf(id), p.id);
-      if (!pt || pt.x < 40 || pt.x > vw.width * 0.6 || pt.y < vw.height * 0.4 || pt.y > vw.height * 0.8) continue;
+    for (const [i, p] of pins.slice(0, 400).entries()) {
+      const pt = seen[i];
+      if (!pt || !alone(pt) || pt.x < 40 || pt.x > vw.width * (vp === "phone" ? 0.85 : 0.6) || pt.y < vw.height * 0.4 || pt.y > vw.height * 0.8) continue;
       const cls = String(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y]));
       if (cls.includes('surface-3d')) {
         hit = { ...p, ...pt };
