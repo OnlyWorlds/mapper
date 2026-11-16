@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BY_LINKS_3D_VERSION } from '@onlyworlds/sdk';
 import { decodeHold, encodeHold, flatHold, HOLD_BUDGET, holdKey, holdsFor, isPublicKey, keepHold, keyHash12, pageHolds, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
 
 const W = '0199c3a1-0000-7000-8000-00000000000a';
@@ -198,6 +199,19 @@ describe('keeping and reading', () => {
     const stuck: HoldBackend = { ...memory(), put: () => new Promise(() => {}) };
     expect(await keepHold(async () => stuck, encodeHold(k, ['a'], [1, 2, 3], 1), 50)).toBe(false);
     expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('a hold made by another version of the method is none; one written before the version was kept is version 1', async () => {
+    const k = holdKey(W, 'public', { reader: 'public' });
+    const value = encodeHold(k, ['a'], [1, 2, 3], 1);
+    expect(value.m).toBe(BY_LINKS_3D_VERSION);
+    expect(decodeHold(value, k)).not.toBeNull();
+    expect(decodeHold({ ...value, m: BY_LINKS_3D_VERSION + 1 }, k)).toBeNull();
+    const { m: _m, ...older } = value;
+    expect(decodeHold(older, k)).toEqual(BY_LINKS_3D_VERSION === 1 ? decodeHold(value, k) : null);
+    const b = memory();
+    await b.put(k, { ...value, m: BY_LINKS_3D_VERSION + 1 });
+    expect((await readHold(async () => b, k)).state).toBe('lost');
   });
 
   it('a public key is the public rung and the public reader, part by part', () => {

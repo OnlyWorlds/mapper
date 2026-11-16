@@ -4,6 +4,7 @@
 // net/holds.ts); an account's or a key's only in the page's memory (pageHolds), so they never
 // outlive the page. Pure: the storage is a backend handed in. A hold that cannot be read, or whose
 // value is not one this page wrote, is none.
+import { BY_LINKS_3D_VERSION } from '@onlyworlds/sdk';
 import type { ReaderRung } from './scene';
 
 /** At most this many holds on a device, the least recently written dropped first. */
@@ -12,6 +13,13 @@ export const HOLD_BUDGET = 4;
 /** What one hold stores: a version, its key, when it was written, and the points by id. */
 export interface HoldValue {
   v: 1;
+  /**
+   * The method's version that made the points (the SDK's `BY_LINKS_3D_VERSION`, raised whenever
+   * any answer of the method changes). A hold made by another version is none: the press lays the
+   * world out from nothing rather than hold points the method would no longer give. Absent on holds
+   * written before it was kept, which version 1 made.
+   */
+  m?: number;
   key: string;
   at: number;
   ids: string[];
@@ -50,7 +58,7 @@ export async function keyHash12(key: string): Promise<string> {
 }
 
 export function encodeHold(key: string, ids: readonly string[], rounded: ArrayLike<number>, at: number): HoldValue {
-  return { v: 1, key, at, ids: [...ids], xyz: Float64Array.from(rounded) };
+  return { v: 1, m: BY_LINKS_3D_VERSION, key, at, ids: [...ids], xyz: Float64Array.from(rounded) };
 }
 
 /**
@@ -61,6 +69,7 @@ export function decodeHold(raw: unknown, key: string): Map<string, Float64Array>
   if (!raw || typeof raw !== 'object') return null;
   const v = raw as Partial<HoldValue>;
   if (v.v !== 1 || v.key !== key || !Array.isArray(v.ids) || !(v.xyz instanceof Float64Array)) return null;
+  if ((v.m ?? 1) !== BY_LINKS_3D_VERSION) return null;
   const { ids, xyz } = v;
   if (xyz.length !== ids.length * 3) return null;
   const out = new Map<string, Float64Array>();
