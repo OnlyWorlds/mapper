@@ -15,9 +15,10 @@ import { encodeHold, flatHold, holdKey, holdsFor, isPublicKey, keepHold, keyHash
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
 import {
   AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_BARE_LINE, CHANGE_LINE, CHANGE_PAGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
-  madeUp, NO_PLATE_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
+  type Links3dAnswer, madeUp, NO_PLATE_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
   STOPPED_LINE, UNSAVED_LINE,
 } from './core/links3d';
+import { floorBesideGroups } from './core/floor';
 import { elementTypeOf, isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
 import { bodiesToRead, chunks, sliceFor, zonesToRead, type Slice } from './core/slice';
@@ -846,6 +847,8 @@ export class App {
 
   /** What the last press drew, for the walks: never the rows. Points are the answer's, rounded, in its own frame. */
   links3d: { from: 'nothing' | 'kept' | 'lost'; fresh: number; nodes: number; plate: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[] } | null = null;
+  /** The shelf as drawn, for the walks: how many moved beside a group, how many gathered by kind, the drawn points. */
+  floor3d: { moved: number; gathered: number; gatheredKinds: string[]; xyz: number[] } | null = null;
 
   /** The press on a world's page: offered only when the world fits the ceiling, else a line says why. */
   private layoutOffer(ws: WorldState): HTMLElement {
@@ -1020,7 +1023,7 @@ export class App {
         if (hold.state === 'no-store') notes.push(NO_STORE_LINE);
         let buildMs: number;
         try {
-          buildMs = this.drawLayout(ws, rows, answer.ids, rounded, from === 'kept' ? keptWords(answer.fresh) : from === 'lost' ? LOST_LINE : FRESH_LINE, notes, () => void run(true));
+          buildMs = this.drawLayout(ws, rows, answer, rounded, from === 'kept' ? keptWords(answer.fresh) : from === 'lost' ? LOST_LINE : FRESH_LINE, notes, () => void run(true));
         } catch (err) {
           console.error(err);
           // The drawing may have cleared the page: the head comes back before the line is said.
@@ -1064,13 +1067,18 @@ export class App {
    * no Markers, no Zones, no ground), through `readMap` and `build`. Nothing enters the world store,
    * so the world's maps list and its Pin counts never see it. Answers the builder's milliseconds.
    */
-  private drawLayout(ws: WorldState, rows: Row[], ids: string[], rounded: Float64Array, holdLine: string, notes: string[], again: () => void): number {
+  private drawLayout(ws: WorldState, rows: Row[], answer: Links3dAnswer, rounded: Float64Array, holdLine: string, notes: string[], again: () => void): number {
+    const ids = answer.ids;
     const byId = new Map<string, Row>();
     for (const r of rows) byId.set(r.id, r);
-    const made = madeUp(ids, rounded, (id) => {
+    const typeOf = (id: string): string | null => {
       const t = byId.get(id)?.type;
       return typeof t === 'string' ? t : null;
-    });
+    };
+    // The shelf drawn beside the groups (the mapper's drawing; the hold keeps the method's points).
+    const floor = floorBesideGroups({ ids, points: rounded, group: answer.group, part: answer.part, piece: answer.piece, typeOf });
+    this.floor3d = { moved: floor.moved, gathered: floor.gathered, gatheredKinds: floor.gatheredKinds, xyz: [...floor.points] };
+    const made = madeUp(ids, floor.points, typeOf);
     const maps = [...ws.store.ofType('map'), made.map];
     const reading: MapReading = { ...readMap(made.map, maps), words: KIND_WORDS };
     const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: rows, pinned: [...ids] };

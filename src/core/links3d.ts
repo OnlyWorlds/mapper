@@ -26,6 +26,10 @@ export interface Links3dAnswer {
   points: Float64Array;
   how: string[];
   group: (string | null)[];
+  /** The method's `part`: 'no-link' for an element on its shelf (nothing links it to the main piece). */
+  part: (string | null)[];
+  /** The shelf piece of `ids[i]` (shelf elements linked to each other share one), else -1 (`shelfPieces`). */
+  piece: Int32Array;
   /** The elements of this answer whose id is not in the hold handed in (R1.1). */
   fresh: number;
   /** The hold was used (handed in and not refused). */

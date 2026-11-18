@@ -5,6 +5,7 @@
 // the page's first script.
 import { layoutByLinks3d, worldGraph } from '@onlyworlds/sdk';
 import { unflatHold } from './hold';
+import { shelfPieces } from './floor';
 import { newCount, type Links3dAnswer } from './links3d';
 import { holdRefusal } from './refusal';
 import { readerFor, type ReaderRung } from './scene';
@@ -40,6 +41,8 @@ export function layOut(input: Links3dInput, now: () => number = () => performanc
     points: a.points,
     how: a.how,
     group: a.group,
+    part: a.part,
+    piece: shelfPieces(a.ids, a.part, graph.edges),
     fresh: newCount(a.ids, held),
     heldUsed: held !== null,
     refused,

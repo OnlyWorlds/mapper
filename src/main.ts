@@ -83,6 +83,10 @@ Object.defineProperty(window, '__mapper', {
     get links3d() {
       return app.links3d ? structuredClone(app.links3d) : null;
     },
+    /** The shelf as drawn beside the groups (the answer's own points are `links3d.xyz`). */
+    get floor3d() {
+      return app.floor3d ? structuredClone(app.floor3d) : null;
+    },
   }),
 });
 
