@@ -255,7 +255,8 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   await page.waitForTimeout(500);
   // The fit centres the picture in what the overlays leave free, not on the whole screen: the middle
   // of the Pins' height on screen stands within a tenth of the free part's height of its middle
-  // (on a phone the old fit put it about 28% too high, under the status card).
+  // (on a phone the old fit put it about 28% too high, under the status card). The free part runs from
+  // the top block to the lower-left corner (the 3D look's switch).
   const centring = () => page.evaluate(() => {
     const top = [...document.querySelectorAll('.top')].filter((e) => e.getClientRects().length).pop();
     const canvas = document.querySelector('canvas.surface-3d')?.getBoundingClientRect();
@@ -263,9 +264,11 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     const ys = window.__mapper.pins().map((p) => window.__mapper.pointOf(p.x, p.y, p.z)).filter(Boolean).map((q) => q.y - canvas.top);
     if (!ys.length) return null;
     const free0 = top.getBoundingClientRect().bottom - canvas.top;
+    const corner = document.querySelector('.corner')?.getBoundingClientRect();
+    const free1 = corner && corner.height > 0 ? corner.top - canvas.top : canvas.height;
     const mid = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const freeMid = (free0 + canvas.height) / 2;
-    return { mid: Math.round(mid), freeMid: Math.round(freeMid), low: Math.round(Math.max(...ys)), h: Math.round(canvas.height), off: Math.round((100 * Math.abs(mid - freeMid)) / (canvas.height - free0)) };
+    const freeMid = (free0 + free1) / 2;
+    return { mid: Math.round(mid), freeMid: Math.round(freeMid), low: Math.round(Math.max(...ys)), foot: Math.round(free1), h: Math.round(canvas.height), off: Math.round((100 * Math.abs(mid - freeMid)) / (free1 - free0)) };
   });
   const centred = await centring();
   check(`${vp} links3d the picture stands in the middle of what the overlays leave free`, !!centred && centred.off <= 10, JSON.stringify(centred));
