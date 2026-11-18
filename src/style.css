@@ -166,6 +166,9 @@ label { font-weight: 600; font-size: 0.95rem; }
 .world-row.pending { min-height: 16rem; }
 .world-head { display: flex; align-items: baseline; gap: 0.15rem 0.6rem; flex-wrap: wrap; }
 .world-title { margin: 0; font-size: 1rem; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+/* The world name is the link into its page: it reads as the heading, underlined on hover and focus. */
+.world-title-link { color: inherit; text-decoration: none; }
+.world-title-link:hover, .world-title-link:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
 .world-role { color: var(--muted); font-size: 0.85rem; }
 .world-status { font-size: 0.85rem; margin: 0.25rem 0; }
 .world-status.note { color: var(--muted); }

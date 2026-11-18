@@ -259,6 +259,8 @@ for (const [vp, opts] of [
     const names = await page.locator('.demos .world-title-name').allTextContents();
     check(`${vp} the home shows the three demo worlds as rows of map cards`, names.length === 3 && (await page.locator('.demos .map-card').count()) >= 10, names.join('|'));
     check(`${vp} the stranger's home reads nothing from OnlyWorlds`, sent.length === n0, sent.slice(n0).join(', '));
+    check(`${vp} each demo world's name is a link into its page`, (await page.locator('.demos .world-title a.world-title-link').count()) === names.length
+      && (await page.locator(`.demos .world-row[data-world="${M}"] .world-title a`).getAttribute('href')) === `/?world=${M}`);
     check(`${vp} Sign in is offered only on the registered origin`, (await page.getByRole('button', { name: 'Sign in with OnlyWorlds' }).count()) === 0 && (await page.locator('#world-id').count()) === 1);
     // Pictures: every picture card shows the media host's small copy, one width, and nothing else.
     const cardsNow = (pg = page) => pg.evaluate(() => [...document.querySelectorAll('.demos .map-card:not(.all)')].map((a) => ({

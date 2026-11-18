@@ -74,8 +74,10 @@ export interface WorldRowParts {
  * A world's row. `headingId` names the row for assistive technology; `role` is what the world is to
  * the person, in words.
  */
-export function worldRow(o: { id: string; name: string; role: string; headingId: string; button: (text: string, onPress: () => void, attrs?: Record<string, string>) => HTMLButtonElement }): WorldRowParts {
-  const title = h('h3', { class: 'world-title', id: o.headingId }, h('span', { class: 'world-title-name' }, o.name || 'A world with no name'));
+export function worldRow(o: { id: string; name: string; role: string; headingId: string; button: (text: string, onPress: () => void, attrs?: Record<string, string>) => HTMLButtonElement; link?: (...children: (Node | string)[]) => HTMLElement }): WorldRowParts {
+  // The world's name is the way into its page (its maps and its layouts): a person reads a heading as the door.
+  const name = h('span', { class: 'world-title-name' }, o.name || 'A world with no name');
+  const title = h('h3', { class: 'world-title', id: o.headingId }, o.link ? o.link(name) : name);
   const role = h('span', { class: 'world-role' }, o.role);
   const head = h('div', { class: 'world-head' }, title, role);
   const status = h('p', { class: 'world-status' });

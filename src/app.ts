@@ -354,16 +354,19 @@ export class App {
     const sec = h('section', { class: 'home-section demos', 'aria-labelledby': 'demos-h' }, h('h2', { id: 'demos-h' }, this.session ? 'Public demo worlds' : 'Public worlds to try'));
     sec.hidden = shown.length === 0;
     for (const d of shown) {
-      const row = worldRow({ id: d.id, name: d.name, role: d.words, headingId: `demo-${d.id}`, button });
+      const row = worldRow({ id: d.id, name: d.name, role: d.words, headingId: `demo-${d.id}`, button, link: (...kids) => this.linkTo({ ...HOME, world: d.id }, 'world-title-link', ...kids) });
       row.setCards(this.cardsFor(d.id, d.cards, d.total));
       sec.append(row.el);
     }
     return sec;
   }
 
-  /** A row's cards: its first maps, then one card into the world's page; none when it has no maps. */
+  /**
+   * A row's cards: its first maps, then one card into the world's page. A world with no maps still has
+   * that one card: its page offers the layout by links, which helps most where no map exists.
+   */
   private cardsFor(world: string, cards: readonly MapCard[], total: number): HTMLElement[] | null {
-    if (total === 0) return null;
+    if (total === 0) return [this.linkTo({ ...HOME, world }, 'map-card all', h('span', { class: 'card-name' }, 'The world’s page'), h('span', { class: 'card-kind' }, 'lay it out by links'))];
     const out: HTMLElement[] = cards.map((c) => this.linkTo({ ...HOME, world, map: c.id }, 'map-card', ...mapCardBody(c)));
     out.push(this.linkTo({ ...HOME, world }, 'map-card all', h('span', { class: 'card-name' }, allCardText(total)), h('span', { class: 'card-kind' }, 'every map, by name')));
     return out;
@@ -428,7 +431,7 @@ export class App {
     const starts: (() => void)[] = [];
     const els: HTMLElement[] = [];
     mine.forEach((w, i) => {
-      const row = worldRow({ id: w.id, name: w.name, role: roleWords(w), headingId: `mine-${i}`, button });
+      const row = worldRow({ id: w.id, name: w.name, role: roleWords(w), headingId: `mine-${i}`, button, link: (...kids) => this.linkTo({ ...HOME, world: w.id }, 'world-title-link', ...kids) });
       row.el.dataset.index = String(i);
       els.push(row.el);
       box.append(row.el);
