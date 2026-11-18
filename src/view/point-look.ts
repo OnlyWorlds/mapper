@@ -6,7 +6,7 @@
 // atlas), and each point carries the number of its own icon. Adapted from the OnlyWorlds dashboard's
 // own icon look, so the two pages draw the same.
 import { CanvasTexture, Color, LinearFilter, LinearMipmapLinearFilter, NormalBlending, ShaderMaterial, type IUniform } from 'three';
-import { DOT_EDGE, GROW_MAX, GROW_MIN, ICON_FROM, NEAR_GLOW, OPEN_GLOW, POINT_MAX_PX } from '../core/look3d';
+import { DOT_EDGE, GROW_MAX, GROW_MIN, ICON_AT, NEAR_GLOW, OPEN_GLOW, POINT_MAX_PX } from '../core/look3d';
 import { TYPE_ICON_PATHS } from './type-icons';
 
 /** A number as a GLSL float literal (`1` is not a float there). */
@@ -83,7 +83,7 @@ export function sharedLook(atlas: IconAtlas): SharedLook {
     uPad: { value: PAD / CELL },
     uRef: { value: 0 },
     uDpr: { value: 1 },
-    uFrom: { value: ICON_FROM[1] },
+    uFrom: { value: ICON_AT },
     uDisc: { value: new Color(DISC) },
     uGrowMin: { value: GROW_MIN },
     uGrowMax: { value: GROW_MAX },

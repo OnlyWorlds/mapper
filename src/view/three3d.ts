@@ -39,7 +39,7 @@ import { GROUP_COLORS, type ElementGroup } from '@onlyworlds/sdk';
 import type { View } from '../core/camera';
 import { focusOf } from '../core/focus';
 import { clipToNear, type Projector } from '../core/hit3d';
-import { drawn, ICON_FROM, NEAR_SCALE, OPEN_SCALE, type Drawn, type Lit } from '../core/look3d';
+import { drawn, ICON_AT, NEAR_SCALE, OPEN_SCALE, type Drawn, type Lit } from '../core/look3d';
 import type { Scene } from '../core/scene';
 import type { ItemKind, LineItem, PinItem, ZoneItem } from '../core/types';
 import { MAX_SIDE, type Picture } from './picture';
@@ -164,13 +164,8 @@ export class Surface3D implements Projector {
   private disposed = false;
   /** The camera's matrices as last rendered, for projections between renders. */
   private projDirty = true;
-  /**
-   * CSS pixels the projection's centre sits below the view's: half the overlay at the top less half
-   * the one at the foot, so a fit centres the picture in what the overlays leave free.
-   */
+  /** CSS pixels the projection's centre sits below the view's: half the overlay at the top, so a fit centres the picture in what the overlays leave free. */
   private lift = 0;
-  /** The last fit's lift is in force (a placed point's centring ends it). */
-  private fitted = false;
   draws = 0;
   lastDrawMs = 0;
   drewPicture = false;
@@ -179,9 +174,9 @@ export class Surface3D implements Projector {
   /** Called when the ground's picture came without CORS and is not drawn in 3D. */
   onGroundRefused: (() => void) | null = null;
 
-  // The icon look (core/look3d.ts): off until the switch asks for it; the atlas is drawn on first use.
+  // The icon look (core/look3d.ts): on from the first draw where the browser can draw the icons.
   private icons = false;
-  private from: number = ICON_FROM[1];
+  private from: number = ICON_AT;
   private atlas: IconAtlas | null = null;
   private shared: SharedLook | null = null;
   /** The camera's distance when the view was fitted: a point at it is drawn at its base width. */
@@ -252,10 +247,10 @@ export class Surface3D implements Projector {
     this.frame3 = frame;
   }
 
-  /** `top` and `bottom`, the overlays' heights now: a fit's lift follows them, so a turned view keeps its place in the free part. */
-  resize(view: View, dpr: number, top?: number, bottom = 0): void {
+  /** `top`, the overlay's height now: a fit's lift follows it, so a turned view keeps its place in the free part. */
+  resize(view: View, dpr: number, top?: number): void {
     this.view = view;
-    if (this.fitted && top !== undefined) this.lift = this.liftFor(top, bottom);
+    if (this.lift > 0 && top !== undefined) this.lift = this.liftFor(top);
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(view.w, view.h, false);
     this.dpr = this.renderer.getPixelRatio();
@@ -266,21 +261,15 @@ export class Surface3D implements Projector {
     this.projDirty = true;
   }
 
-  /**
-   * Half the top overlay's height less half the foot's, the two together held to 70% of the view as
-   * the fit's `free` is (both shrunk alike, so the picture still centres between them).
-   */
-  private liftFor(top: number, bottom: number): number {
-    const t = Math.max(0, top);
-    const b = Math.max(0, bottom);
-    const k = t + b > this.view.h * 0.7 ? (this.view.h * 0.7) / (t + b) : 1;
-    return ((t - b) * k) / 2;
+  /** Half the overlay's height, the overlay held to 70% of the view as the fit's `free` is. */
+  private liftFor(top: number): number {
+    return Math.max(0, Math.min(top, this.view.h * 0.7)) / 2;
   }
 
   /** The projection's centre moved down by `lift`; every screen read goes through the same matrix. */
   private offset(): void {
     const { w, h } = this.view;
-    if (this.lift !== 0) this.camera.setViewOffset(w, h, 0, -this.lift, w, h);
+    if (this.lift > 0) this.camera.setViewOffset(w, h, 0, -this.lift, w, h);
     else this.camera.clearViewOffset();
   }
 
@@ -304,15 +293,14 @@ export class Surface3D implements Projector {
     this.camera.updateProjectionMatrix();
   }
 
-  /** The whole frame in view, seen from the south and above, clear of `top` CSS pixels of overlay above and `bottom` below. */
-  fit(top: number, bottom = 0): void {
+  /** The whole frame in view, seen from the south and above, clear of `top` CSS pixels of overlay. */
+  fit(top: number): void {
     const { c, r } = this.bounds();
     const vfov = (FOV * Math.PI) / 180;
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
-    const free = Math.max(0.3, 1 - (top + bottom) / Math.max(1, this.view.h));
-    // The frame's centre stands at the centre of the free part, between the overlays, not of the screen.
-    this.lift = this.liftFor(top, bottom);
-    this.fitted = true;
+    const free = Math.max(0.3, 1 - top / Math.max(1, this.view.h));
+    // The frame's centre stands at the centre of the free part, below the overlays, not of the screen.
+    this.lift = this.liftFor(top);
     this.offset();
     const d = (r / Math.sin(Math.min(vfov * free, hfov) / 2)) * 0.92;
     const el = (32 * Math.PI) / 180;
@@ -351,9 +339,8 @@ export class Surface3D implements Projector {
   /** Move the camera and its target together so the point stands at the view's centre. */
   centreOn(x: number, y: number, z: number): void {
     // The view's own centre: the lift is the whole frame's fit, and a placed point keeps its own rule.
-    if (this.fitted || this.lift !== 0) {
+    if (this.lift !== 0) {
       this.lift = 0;
-      this.fitted = false;
       this.offset();
       this.projDirty = true;
     }
@@ -687,8 +674,8 @@ export class Surface3D implements Projector {
   // ---- the look: dots or icons
 
   /**
-   * Dots (the fixed-size Pins) or icons: a point grows as it nears and turns into its type's icon at
-   * `from` CSS px. False where the browser cannot draw the icons (the view stays in dots). Drawn on
+   * Icons (a point grows as it nears and turns into its type's icon at `from` CSS px) or the
+   * fixed-size dots. False where the browser cannot draw the icons (the view stays in dots). Drawn on
    * the next render.
    */
   look(icons: boolean, from: number): boolean {

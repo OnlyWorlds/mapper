@@ -1,10 +1,9 @@
-// The 3D view's two looks for its Pins: dots (a fixed size on screen, the default) or icons, where a
-// point grows as it nears the camera and, from a threshold, turns into its element type's icon on a
-// dark disc. Pure: the sizes the shader draws and the press reads, and the choice as it is kept.
+// The 3D view's Pins as their element types' icons: a point grows as it nears the camera and, from
+// 16 px wide, turns into its type's icon on a dark disc (below that, and where a browser cannot draw
+// the icons, a dot). Pure: the sizes the shader draws and the press reads.
 
-/** Where a dot can turn into its icon, in CSS pixels (the switch's second lever). */
-export const ICON_FROM = [16, 20] as const;
-export type IconFrom = (typeof ICON_FROM)[number];
+/** Where a dot turns into its icon, in CSS pixels. */
+export const ICON_AT = 16;
 /** How far a point grows or shrinks with nearness: its depth against the depth the view was fitted at. */
 export const GROW_MIN = 0.75;
 export const GROW_MAX = 5;
@@ -53,36 +52,4 @@ export function drawn(o: { base: number; lit: Lit; ref: number; depth: number; d
   const px = Math.min(pointPx(o.base, scaleOf(o.lit), o.ref, o.depth), o.maxSprite / (glowOf(o.lit) * o.dpr));
   const icon = o.hasIcon && px >= o.from;
   return { px, icon, r: (px / 2) * (icon ? 1 : DOT_EDGE) };
-}
-
-/** The look as one browser keeps it: `icons:16`, `icons:20`, `dots:16`, `dots:20` (Dots keeps the threshold for the next Icons). */
-export const LOOK_KEY = 'mapper.points3d';
-
-export interface Look {
-  icons: boolean;
-  from: IconFrom;
-}
-
-/** A kept value read: anything else, or nothing, is the dots from 20 px. */
-export function readLook(v: string | null): Look {
-  return { icons: v === 'icons:16' || v === 'icons:20', from: v === 'icons:16' || v === 'dots:16' ? 16 : 20 };
-}
-
-export const writeLook = (l: Look): string => `${l.icons ? 'icons' : 'dots'}:${l.from}`;
-
-/** The look this browser keeps, or the dots where storage cannot be read. */
-export function storedLook(): Look {
-  try {
-    return readLook(localStorage.getItem(LOOK_KEY));
-  } catch {
-    return readLook(null);
-  }
-}
-
-export function storeLook(l: Look): void {
-  try {
-    localStorage.setItem(LOOK_KEY, writeLook(l));
-  } catch {
-    // Kept for this page only.
-  }
 }
