@@ -136,6 +136,14 @@ function pointsGeometry(pts: readonly [number, number, number][], colors?: reado
   return g;
 }
 
+/** One ring of the icon look: where, how wide across and its line (CSS px), its colour. */
+interface Ring {
+  at: [number, number, number];
+  size: number;
+  line: number;
+  color: Color;
+}
+
 function segmentsGeometry(segs: readonly number[]): BufferGeometry {
   const g = new BufferGeometry();
   g.setAttribute('position', new Float32BufferAttribute(segs, 3));
@@ -184,6 +192,8 @@ export class Surface3D implements Projector {
   private dpr = 1;
   /** The largest point sprite this GPU draws, device px. */
   private maxSprite = 64;
+  /** The one material every ring of the icon look draws with (made on first use, given back with the view). */
+  private ringMat: ShaderMaterial | null = null;
   /** Each lit Pin's light as the last pass drew it (selected 2, reached 1): the press reads the same. */
   private lit = new Map<string, Lit>();
 
@@ -570,7 +580,8 @@ export class Surface3D implements Projector {
     for (const m of this.marks) {
       this.three.remove(m);
       m.geometry.dispose();
-      (m.material as { dispose(): void }).dispose();
+      // The rings' material is kept for the next pass: disposing it would release its program.
+      if (m.material !== this.ringMat) (m.material as { dispose(): void }).dispose();
     }
     this.marks = [];
     this.lit.clear();
@@ -658,8 +669,10 @@ export class Surface3D implements Projector {
     if (this.icons && this.shared) {
       // The icon look: a selected Pin's light is its glow and its whitened rim; the mark and the hover
       // ring the point as it is drawn now, clear of its edge.
-      this.ringsOf(pass.marked, scene, pass, pass.theme.accent, MARK_PX, 6, 2, add);
-      this.ringsOf(hov, scene, pass, pass.theme.hover, SELECT_PX, 3, 2.5, add);
+      const rings: Ring[] = [];
+      this.ringsOf(pass.marked, scene, pass, pass.theme.accent, MARK_PX, 6, 2, rings);
+      this.ringsOf(hov, scene, pass, pass.theme.hover, SELECT_PX, 3, 2.5, rings);
+      if (rings.length) add(this.ringPoints(rings));
     } else {
       ring(pinsOf(pass.marked), pass.theme.accent, MARK_PX);
       ring(pinsOf(pass.selection), pass.theme.accent, SELECT_PX);
@@ -748,14 +761,28 @@ export class Surface3D implements Projector {
   }
 
   /** A ring round each of these Pins as drawn now: `gap` CSS px clear of its edge, never smaller than `least`. */
-  private ringsOf(ids: Iterable<string>, scene: Scene, pass: Pass3D, color: string, least: number, gap: number, line: number, add: (o: Points) => void): void {
+  private ringsOf(ids: Iterable<string>, scene: Scene, pass: Pass3D, color: string, least: number, gap: number, line: number, out: Ring[]): void {
     if (pass.hidden.has('pin')) return;
+    const c = css(color).color;
     for (const id of ids) {
       const it = scene.byId.get(id);
       if (it?.kind !== 'pin') continue;
       const size = Math.min(Math.max(least, 2 * (this.drawnOf(it).r + gap + line)), this.maxSprite / this.dpr);
-      add(new Points(pointsGeometry([[it.x, it.y, it.z]]), ringMaterial(css(color).color, size, line, this.dpr)));
+      out.push({ at: [it.x, it.y, it.z], size, line, color: c });
     }
+  }
+
+  /** The pass's rings as one set of points, drawn with the view's one ring material. */
+  private ringPoints(rings: readonly Ring[]): Points {
+    const g = pointsGeometry(rings.map((r) => r.at));
+    g.setAttribute('aSize', new BufferAttribute(new Float32Array(rings.map((r) => r.size)), 1));
+    g.setAttribute('aLine', new BufferAttribute(new Float32Array(rings.map((r) => r.line)), 1));
+    const col = new Float32Array(3 * rings.length);
+    rings.forEach((r, i) => col.set([r.color.r, r.color.g, r.color.b], 3 * i));
+    g.setAttribute('aCol', new BufferAttribute(col, 3));
+    this.ringMat ??= ringMaterial();
+    this.ringMat.uniforms.uDpr.value = this.dpr;
+    return new Points(g, this.ringMat);
   }
 
   /** How many shown Pins are drawn as their icon now (0 in dots), for a walk. */
@@ -820,9 +847,10 @@ export class Surface3D implements Projector {
     this.dropGround();
     for (const m of this.marks) {
       m.geometry.dispose();
-      (m.material as { dispose(): void }).dispose();
+      if (m.material !== this.ringMat) (m.material as { dispose(): void }).dispose();
     }
     this.marks = [];
+    this.ringMat?.dispose();
     this.textures.dot.dispose();
     this.textures.ring.dispose();
     this.atlas?.tex.dispose();

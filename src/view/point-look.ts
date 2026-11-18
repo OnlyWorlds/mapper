@@ -179,33 +179,42 @@ export function iconMaterial(shared: SharedLook, px: number, scale: number, lit:
 }
 
 const RING_VERT = /* glsl */ `
-uniform float uSize, uDpr;
+attribute vec3 aCol;
+attribute float aSize, aLine;
+uniform float uDpr;
+varying vec3 vCol;
+varying float vSize, vLine;
 void main() {
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = uSize * uDpr;
+  vCol = aCol;
+  vSize = aSize;
+  vLine = aLine;
+  gl_PointSize = aSize * uDpr;
 }`;
 
 const RING_FRAG = /* glsl */ `
-uniform vec3 uColor;
-uniform float uSize, uLine, uDpr;
+uniform float uDpr;
+varying vec3 vCol;
+varying float vSize, vLine;
 void main() {
-  float R = uSize * uDpr * 0.5;
+  float R = vSize * uDpr * 0.5;
   float r = length(gl_PointCoord - 0.5) * 2.0 * R;
-  float w = uLine * uDpr;
+  float w = vLine * uDpr;
   float a = clamp(R - 0.5 - r + 0.5, 0.0, 1.0) * clamp(r - (R - 0.5 - w) + 0.5, 0.0, 1.0);
   if (a < 0.03) discard;
-  gl_FragColor = vec4(uColor, a);
+  gl_FragColor = vec4(vCol, a);
   #include <colorspace_fragment>
 }`;
 
 /**
- * A ring round one point as the icon look draws it (the hover, the element view's mark): `size` CSS
- * pixels across, its line `line` CSS pixels wide, over everything. A fixed-size ring would sit inside
- * a near icon.
+ * The rings round points as the icon look draws them (the hover, the element view's mark), each over
+ * everything, its own width across (`aSize`, CSS px), line width (`aLine`) and colour (`aCol`), so a
+ * fixed-size ring never sits inside a near icon. One material serves every ring of a view: made once,
+ * its program is linked once (a material made per frame linked a program on every frame).
  */
-export function ringMaterial(color: Color, size: number, line: number, dpr: number): ShaderMaterial {
+export function ringMaterial(): ShaderMaterial {
   return new ShaderMaterial({
-    uniforms: { uColor: { value: color }, uSize: { value: size }, uLine: { value: line }, uDpr: { value: dpr } },
+    uniforms: { uDpr: { value: 1 } },
     vertexShader: RING_VERT,
     fragmentShader: RING_FRAG,
     transparent: true,
