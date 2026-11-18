@@ -440,7 +440,7 @@ export async function look3dWalk({ browser, which, vp, opts, check, base }) {
   await lookWalk({ browser, which, tag: 'desk-dpr2', opts: { ...opts, colorScheme: 'dark', deviceScaleFactor: 2 }, check, base, dpr: 2 });
 }
 
-/** Frame time on 5,000 Pins: Dots and Icons taken in turn five times each, the median of each, at Fit and nearer. */
+/** Frame time on 5,000 Pins: Dots and Icons taken in turn nine times each, 300 frames a time, the median of each, at Fit and nearer. */
 async function benchWalk({ browser, which, base, check }) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
   await ctx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
@@ -450,13 +450,13 @@ async function benchWalk({ browser, which, base, check }) {
   await page.waitForTimeout(500);
   const row = page.locator('.look3d');
   const pinsDrawn = (await page.evaluate(() => window.__mapper.scene.kinds.pin)) ?? 0;
-  const one = () => page.evaluate(() => window.__mapper.bench3d(60));
+  const one = () => page.evaluate(() => window.__mapper.bench3d(300));
   const look = async (name) => { await row.getByRole('button', { name, exact: true }).click(); await page.waitForTimeout(150); await one(); };
   const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   const take = async () => {
     const d = [];
     const i = [];
-    for (let k = 0; k < 5; k++) {
+    for (let k = 0; k < 9; k++) {
       await look('Dots');
       d.push((await one()).ms);
       await look('Icons');
@@ -476,7 +476,7 @@ async function benchWalk({ browser, which, base, check }) {
   await page.screenshot({ path: `.scratch/shots/look3d-${which}-bench-near.png` });
   const f = (x) => x.toFixed(2);
   console.log(`bench ${which}: renderer ${gpu}`);
-  console.log(`bench ${which}: ${pinsDrawn} Pins; ms a frame (median of 5 in turn, 60 frames each), Fit dots ${f(fit.dots)} icons ${f(fit.icons)} (${fitIcons} icons drawn); nearer dots ${f(near.dots)} icons ${f(near.icons)} (${nearIcons} icons drawn)`);
+  console.log(`bench ${which}: ${pinsDrawn} Pins; ms a frame (median of 9 in turn, 300 frames each), Fit dots ${f(fit.dots)} icons ${f(fit.icons)} (${fitIcons} icons drawn); nearer dots ${f(near.dots)} icons ${f(near.icons)} (${nearIcons} icons drawn)`);
   console.log(`bench ${which}: runs Fit dots ${fit.d.map(f).join(' ')} | icons ${fit.i.map(f).join(' ')}; nearer dots ${near.d.map(f).join(' ')} | icons ${near.i.map(f).join(' ')}`);
   check(`bench a world of 5,000 Pins drawn`, pinsDrawn >= BENCH_N, `${pinsDrawn}`);
   check(`bench Icons within 10% of Dots at Fit (${((fit.icons / fit.dots) * 100).toFixed(0)}%)`, fit.icons <= fit.dots * 1.1);
