@@ -1,22 +1,22 @@
 // The 3D view's icon look, on a played world of its own: a saved layout with a depth whose Pins stand
-// apart, of seven element types. Every request is answered here; none reaches the real server.
+// apart, of eight element types. Every request is answered here; none reaches the real server.
 // The drawn widths are read from the picture's pixels (the canvas screenshot, walk/png.mjs), never
-// only from the page's own numbers: at Fit, along a zoom until a point turns into its icon, a selected
-// Pin and the Pin its link reaches at their lit sizes, at device ratio 1 and 2, then back in Dots.
-// The switch: shown only in 3D, reachable by keyboard, kept per browser (a reload, Dots then Icons,
-// junk or a throwing storage), carried across Flat and 3D and a WebGL context lost.
+// only from the page's own numbers: at Fit, either side of the 16 px threshold, along a zoom until a
+// point turns into its icon, a selected Pin and the Pin its link reaches at their lit sizes, at device
+// ratio 1 and 2, and the dots where a browser cannot draw the icons (no Path2D). The press: near a
+// large icon's rim, where a selected Pin overlaps a nearer dimmed one, and the lowest Pin at Fit.
 // The played walk (walk/played.mjs) runs it as its section `look3d`.
 //   npm run build && node walk/look3d.mjs [chromium|firefox]
-//   node walk/look3d.mjs [chromium|firefox] --bench   frame time on a world of 5,000 Pins, Dots against
-//     Icons, each frame waited for; Chromium draws on the machine's GPU (ANGLE on Direct3D 11), and the
-//     renderer each engine drew with is printed beside the numbers.
+//   BENCH_DOTS=<dist> node walk/look3d.mjs [chromium|firefox] --bench   frame time on a world of 5,000
+//     Pins, the icons against the dots of a build from before them (served beside), each frame waited
+//     for; Chromium draws on the machine's GPU (ANGLE on Direct3D 11; LOOK_GPU=high asks for a laptop's
+//     faster one), and the renderer each engine drew with is printed beside the numbers.
 // MAPPER_DIST serves another build (a control), MAPPER_PORT another port, SHOW=1 prints every check.
 import { chromium, firefox } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { decodePng } from './png.mjs';
 import { serve } from './serve.mjs';
 
-const LOOK_KEY = 'mapper.points3d';
 const W = 'a3a3a3a3-a3a3-7a3a-8a3a-a3a3a3a3a3a3';
 const BW = 'a4a4a4a4-a4a4-7a4a-8a4a-a4a4a4a4a4a4';
 const id = (w, n) => `${w.slice(0, 8)}-${w.slice(0, 4)}-7${w.slice(1, 4)}-8${w.slice(1, 4)}-${String(n).padStart(12, '0')}`;
@@ -113,10 +113,15 @@ const v3 = (page) => page.evaluate(() => window.__mapper.view3d);
 const drawnOf = (page, pin) => page.evaluate((p) => window.__mapper.drawn3d(p), pin);
 
 /**
- * Each Pin's drawn radius read from the picture's pixels: along 8 rays from far outside inward, the
- * first pixel unlike that ray's own outer colour by half the ray's peak difference is the edge. Two
+ * Each Pin's drawn radius read from the picture's pixels: along 16 rays from far outside inward, the
+ * first pixel unlike that ray's own outer colour by half the ray's peak difference is the edge. The
+ * peak is taken outside 0.62 of the page's own radius, so an icon's ink (lifted toward white, inside
+ * 0.56 of the radius) never stands in for its rim (a small dark-coloured icon read 0.86 by its ink);
+ * a dot's edge drawn at 0.8 of the radius the press reads, or past it by a quarter, still lies in that
+ * window and is read where it is drawn. Two
  * opposite rays make a diameter (so a sprite placed half a pixel off, as Firefox places some, reads
- * true), and the radius is the median of the four halved diameters, CSS px. The overlays are hidden
+ * true), and the radius is the median of the eight halved diameters, CSS px (a small icon at device
+ * ratio 1 read 8.9 of its 10 from four, about 9.6 from eight: the diagonals land between pixels). The overlays are hidden
  * for the shot (the canvas does not move).
  */
 async function pixelRadii(page, pts) {
@@ -128,14 +133,14 @@ async function pixelRadii(page, pts) {
   const k = png.w / box.width;
   const px = (X, Y) => { const i = (Y * png.w + X) * 4; return [png.data[i], png.data[i + 1], png.data[i + 2]]; };
   const out = {};
-  for (const [name, cx, cy, far] of pts) {
+  for (const [name, cx, cy, far, rExp] of pts) {
     const x = (cx - box.x) * k;
     const y = (cy - box.y) * k;
-    const rs = new Array(8).fill(null);
+    const rs = new Array(16).fill(null);
     let peakAll = 0;
-    for (let a = 0; a < 8; a++) {
-      const dx = Math.cos((a * Math.PI) / 4);
-      const dy = Math.sin((a * Math.PI) / 4);
+    for (let a = 0; a < 16; a++) {
+      const dx = Math.cos((a * Math.PI) / 8);
+      const dy = Math.sin((a * Math.PI) / 8);
       const prof = [];
       let bg = null;
       for (let r = far * k; r >= 0; r -= 0.25) {
@@ -147,16 +152,16 @@ async function pixelRadii(page, pts) {
         bg ??= c;
         prof.push([r, Math.abs(c[0] - bg[0]) + Math.abs(c[1] - bg[1]) + Math.abs(c[2] - bg[2])]);
       }
-      const peak = Math.max(0, ...prof.map((q) => q[1]));
+      const peak = Math.max(0, ...prof.filter((q) => q[0] >= 0.62 * rExp * k).map((q) => q[1]));
       peakAll = Math.max(peakAll, peak);
       if (peak > 60) {
         const e = prof.find((q) => q[1] >= peak / 2);
         if (e) rs[a] = e[0] / k;
       }
     }
-    const ds = [0, 1, 2, 3].filter((a) => rs[a] !== null && rs[a + 4] !== null).map((a) => (rs[a] + rs[a + 4]) / 2).sort((a, b) => a - b);
-    const mid = ds.length === 4 ? (ds[1] + ds[2]) / 2 : ds[Math.floor(ds.length / 2)];
-    out[name] = { r: ds.length >= 3 ? mid : null, peak: peakAll };
+    const ds = [0, 1, 2, 3, 4, 5, 6, 7].filter((a) => rs[a] !== null && rs[a + 8] !== null).map((a) => (rs[a] + rs[a + 8]) / 2).sort((a, b) => a - b);
+    const mid = ds.length % 2 === 0 ? (ds[ds.length / 2 - 1] + ds[ds.length / 2]) / 2 : ds[Math.floor(ds.length / 2)];
+    out[name] = { r: ds.length >= 5 ? mid : null, peak: peakAll };
   }
   return out;
 }
@@ -168,7 +173,7 @@ async function ratios(page, only = null) {
   await page.mouse.move(3, Math.round(vw.height / 2));
   await page.waitForTimeout(60);
   const clear = await clearPins(page, only);
-  const read = await pixelRadii(page, clear.map((a) => [a.name, a.x, a.y, a.px * 0.9 + 6]));
+  const read = await pixelRadii(page, clear.map((a) => [a.name, a.x, a.y, a.px * 0.9 + 6, a.r]));
   return clear.map((a) => ({ ...a, drawn: read[a.name].r, peak: read[a.name].peak, ratio: read[a.name].r === null ? null : read[a.name].r / a.r }));
 }
 
@@ -187,10 +192,10 @@ async function clearPins(page, only = null) {
 }
 
 // The scan finds an antialiased edge within about a device pixel: a radius under 6 px is held to 1.75
-// px either way, a larger one to 1.15 of the page's own radius above and to 0.9 of it or 0.75 px
-// (whichever is looser) below (Firefox at device ratio 1 read a dot of 6.2 at 5.6). A dot's edge drawn
+// px either way, a larger one to 1.15 of the page's own radius above and to 0.9 of it or 1 px
+// (whichever is looser) below (at device ratio 1 Firefox read a dot of 6.2 at 5.6, Chromium an icon of 10 at 8.9). A dot's edge drawn
 // at the whole radius, or the press reading 0.8 of a body's, is 20% off: outside either band from 6 px.
-const near = (x) => (x.r < 6 ? Math.abs(x.drawn - x.r) <= 1.75 : x.drawn >= Math.min(0.9 * x.r, x.r - 0.75) && x.ratio < 1.15);
+const near = (x) => (x.r < 6 ? Math.abs(x.drawn - x.r) <= 1.75 : x.drawn >= Math.min(0.9 * x.r, x.r - 1) && x.ratio < 1.15);
 const ratiosOk = (rows) => {
   const read = rows.filter((x) => x.drawn !== null);
   return read.length >= 2 && read.every(near);
@@ -200,8 +205,8 @@ const words = (rows) => rows.map((x) => `${x.name} ${x.px.toFixed(1)} px ${x.ico
 
 /**
  * One context's walk of the icon look. `dpr` is the device ratio asked for, `phone` a touch phone
- * (its presses are taps), `scheme` the colour scheme (the pixel reads run on the dark one, where the
- * Dots' ring is the ground's own colour and a body's rim stands out from it).
+ * (its presses are taps). The pixel reads run on the dark scheme, where a body's rim stands out from
+ * the ground and the dots' ring is the ground's own colour.
  */
 async function lookWalk({ browser, which, tag, opts, check, base, phone = false, dpr = 1 }) {
   mkdirSync('.scratch/shots', { recursive: true });
@@ -215,10 +220,7 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
   const snap = (name) => page.screenshot({ path: `.scratch/shots/look3d-${which}-${tag}-${String(++shotN).padStart(2, '0')}-${name}.png` }).catch(() => {});
   const c = (label, ok, detail = '') => check(`${tag} look3d ${label}`, ok, detail);
   const press = async (x, y) => (phone ? page.touchscreen.tap(x, y) : page.mouse.click(x, y));
-  const row = page.locator('.look3d');
-  const btn = (name) => row.getByRole('button', { name, exact: true });
-  const pressed = async (name) => (await btn(name).getAttribute('aria-pressed', { timeout: 3000 }).catch(() => null)) === 'true';
-  const stored = () => page.evaluate((k) => { try { return localStorage.getItem(k); } catch { return 'unreadable'; } }, LOOK_KEY);
+  const fitBtn = () => page.locator('.zoom button[aria-label="Fit the map"]');
   const on3d = () => page.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).then(() => true, () => false);
   const open = async () => {
     await page.goto(`${base}/?world=${W}&map=${MAP}`);
@@ -233,11 +235,11 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
   // Playwright's Firefox can drop the asked device ratio (a page with COOP same-origin): a run that is not at its ratio fails, never passes for the other.
   c(`runs at device ratio ${dpr}`, real === dpr, `the page reads ${real}`);
   let v = await v3(page);
-  c('the dots by default: Dots pressed, no threshold shown', v.look === 'dots' && v.icons === 0 && (await row.isVisible()) && (await pressed('Dots')) && !(await pressed('Icons')) && !(await btn('20 pixels').isVisible()), JSON.stringify({ look: v.look, icons: v.icons }));
-  c('a saved layout keeps its stems in the dots', v.stems === 2, `${v.stems}`);
-  // The fit keeps clear of the lower-left switch as of the top block: the Pin lowest on screen (the
-  // gate, at the frame's near left corner) stands above the switch and a press on it selects it.
-  // On a phone also turned on its side, where the frame's foot reaches the switch's height.
+  c('the icons from the first draw, from 16 px, with no switch', v.look === 'icons' && v.from === 16 && (await page.locator('.look3d, .corner').count()) === 0, JSON.stringify({ look: v.look, from: v.from }));
+  c('a saved layout keeps its stems', v.stems === 2, `${v.stems}`);
+
+  // At Fit the Pin lowest on screen (the gate, at the frame's near left corner) is the element under
+  // its own middle and a press on it selects it; on a phone also turned on its side.
   const lowCheck = async (how) => {
     const at = [];
     for (const e of Object.values(E)) {
@@ -245,9 +247,8 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
       if (d) at.push({ e, ...d });
     }
     const low = at.sort((x, y) => y.y - x.y)[0];
-    const sw = await row.boundingBox();
     const top = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [low.x, low.y]);
-    c(`${how}: at Fit the lowest Pin stands clear of the switch`, !!sw && (low.y < sw.y - 4 || low.x > sw.x + sw.width + 4) && /surface-3d|label3d/.test(String(top)), `${low.e.name} at ${Math.round(low.x)},${Math.round(low.y)}, the switch ${Math.round(sw?.x ?? -1)},${Math.round(sw?.y ?? -1)} ${Math.round(sw?.width ?? 0)}x${Math.round(sw?.height ?? 0)}, under it: ${top}`);
+    c(`${how}: at Fit the lowest Pin is drawn in the open`, /surface-3d|label3d/.test(String(top)), `${low.e.name} at ${Math.round(low.x)},${Math.round(low.y)}, under it: ${top}`);
     await press(low.x, low.y);
     await page.waitForSelector('.card:not([hidden])', { timeout: 5000 }).catch(() => {});
     const sel = await page.evaluate(() => window.__mapper.selection);
@@ -255,56 +256,52 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
     if (await page.locator('.card .close').first().isVisible()) await page.locator('.card .close').first().click();
     await settle(page);
   };
-  await lowCheck('Dots');
-
-  // Dots: each Pin a 9 px disc as before, read from the pixels (the page's own 9 is a constant).
-  if (!phone) {
-    const dots = await ratios(page);
-    c('Dots: each Pin drawn 9 px wide, from the pixels', ratiosOk(dots) && dots.every((x) => x.px === 9), words(dots));
-  }
-
-  // Icons, by keyboard: Tab from Dots reaches Icons, Enter presses it; the focus stays on it.
-  if (!phone) {
-    await btn('Dots').focus();
-    await page.keyboard.press('Tab');
-    const at = await page.evaluate(() => document.activeElement?.textContent);
-    c('Tab from Dots reaches Icons', at === 'Icons', at);
-    await page.keyboard.press('Enter');
-  } else await btn('Icons').tap();
-  await settle(page);
-  v = await v3(page);
-  c('Icons pressed: the icon look from 20 px', v.look === 'icons' && v.from === 20 && (await pressed('Icons')) && (await pressed('20 pixels')) && !(await pressed('16 pixels')), JSON.stringify({ look: v.look, from: v.from }));
-  c('kept for this browser', (await stored()) === 'icons:20', await stored());
-  if (!phone) c('the focus stays on Icons', (await page.evaluate(() => document.activeElement?.textContent)) === 'Icons');
-  c('stems unchanged in the icon look', v.stems === 2, `${v.stems}`);
-  // In Icons the switch is wider (the threshold beside it): on a phone turned on its side the frame's
-  // near corner then falls where the switch is, unless the fit keeps clear of it.
+  await lowCheck('upright');
   if (phone) {
     const upright = page.viewportSize();
     await page.setViewportSize({ width: upright.height, height: upright.width });
     await page.waitForTimeout(400);
-    await page.locator('.zoom button[aria-label="Fit the map"]').click();
+    await fitBtn().click();
     await settle(page);
     await snap('sideways');
-    await lowCheck('Icons, on its side');
+    await lowCheck('on its side');
     await page.setViewportSize(upright);
     await page.waitForTimeout(400);
-    await page.locator('.zoom button[aria-label="Fit the map"]').click();
+    await fitBtn().click();
     await settle(page);
   }
   await snap('icons-fit');
 
-  const box = await page.locator('canvas.surface-3d').boundingBox();
   if (!phone) {
-    // At Fit every Pin is a dot in the icon look, drawn at the radius the press reads.
+    // At Fit every Pin is a dot, drawn at the radius the press reads.
     const fit = await ratios(page);
     c('at Fit each Pin is drawn at the radius the press reads, from the pixels', ratiosOk(fit), words(fit));
+    // Either side of the threshold, read from the picture: nearer toward the middle in small steps until
+    // a ground Pin is drawn 15 to 15.9 px wide (a dot of radius 6 or more, where the band tells a dot's
+    // edge at 0.8 from one at the whole radius) and one 16.3 to 19.7 px wide (its icon), each against
+    // the radius the press reads.
+    const cb = await page.locator('canvas.surface-3d').boundingBox();
+    let dotMid = null;
+    let iconMid = null;
+    for (let k = 0; k < 240 && !(dotMid && iconMid); k++) {
+      const rows = await clearPins(page);
+      const d = rows.find((a) => a.px >= 15 && a.px <= 15.9);
+      const i = rows.find((a) => a.px >= 16.3 && a.px <= 19.7);
+      if (d && !dotMid) dotMid = (await ratios(page, [d.k]))[0] ?? null;
+      if (i && !iconMid) iconMid = (await ratios(page, [i.k]))[0] ?? null;
+      await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+      await page.mouse.wheel(0, -10);
+      await page.waitForTimeout(50);
+    }
+    c('below 16 px a Pin is a dot, drawn at the radius the press reads, from the pixels', !!dotMid && !dotMid.icon && dotMid.r >= 6 && dotMid.drawn !== null && near(dotMid), dotMid ? words([dotMid]) : 'none found');
+    c('from 16 px a Pin is its icon, drawn at the radius the press reads, from the pixels', !!iconMid && iconMid.icon && iconMid.drawn !== null && near(iconMid), iconMid ? words([iconMid]) : 'none found');
+    await fitBtn().click();
+    await settle(page);
   }
 
-  // Nearer until the target turns into its icon: at a desk the wheel toward Mara (and at each step the
-  // drawn radii are read: a dot of radius 6 or more, drawn 15 to 20 px wide, must be among them, for at
-  // smaller dots the band cannot tell a dot's edge wrong); on a phone the + button, which moves toward
-  // where the camera aims, toward the well standing there.
+  // Nearer until the target turns into its icon: at a desk the wheel toward Mara (the drawn radii read
+  // at each step); on a phone the + button, which moves toward where the camera aims, toward the well
+  // standing there.
   const T = phone ? E.well : E.mara;
   const N = E.ivo;
   const focusWant = { pins: 2, lines: 1 };
@@ -328,9 +325,9 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
   await snap('icons-near');
   if (!phone) {
     const bad = seen.filter((x) => x.drawn !== null && !near(x));
-    const bigDot = seen.filter((x) => !x.icon && x.r >= 6 && x.drawn !== null);
+    const dots = seen.filter((x) => !x.icon && x.drawn !== null);
     const icon = seen.filter((x) => x.icon && x.drawn !== null);
-    c('along the zoom each Pin is drawn at the radius the press reads, an icon and a dot of radius 6 or more among them', seen.length > 10 && bad.length === 0 && bigDot.length > 0 && icon.length > 0, `${seen.length} read, ${bigDot.length} large dots (ratio ${span(bigDot)}), ${icon.length} icons (ratio ${span(icon)}); off: ${words(bad.slice(0, 4))}`);
+    c('along the zoom each Pin is drawn at the radius the press reads, dots and icons among them', seen.length > 10 && bad.length === 0 && dots.length > 0 && icon.length > 0, `${seen.length} read, ${dots.length} dots (ratio ${span(dots)}), ${icon.length} icons (ratio ${span(icon)}); off: ${words(bad.slice(0, 4))}`);
   }
 
   // A press near its rim, past the reach of a centre (8 px, a touch 14), selects it.
@@ -380,138 +377,63 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
     c('Escape: she is drawn at her width again, from the pixels', unlit.length === 1 && unlit[0].ratio > 0.9 && unlit[0].ratio < 1.15, words(unlit));
   }
   await snap('icons-open');
-
-  // The threshold: from 16 px more Pins (or as many) carry their icon, kept.
-  const n20 = (await v3(page)).icons;
-  if (phone) {
-    // The sheet covers the switch on a phone (as it does the zoom buttons): it is closed first.
-    c('on a phone the switch steps aside for the sheet', !(await row.isVisible()));
-    await page.locator('.card .close').first().tap();
-    await settle(page);
-    await btn('16 pixels').tap();
-  }
-  else await btn('16 pixels').click();
-  await settle(page);
-  v = await v3(page);
-  c('Icon from 16 px chosen and kept', v.from === 16 && v.icons >= n20 && (await stored()) === 'icons:16' && (await pressed('16 pixels')), `${v.icons} icons against ${n20}, ${await stored()}`);
-  if (!phone) {
-    // The second threshold read from the picture: Fit, then nearer toward the middle in small steps
-    // until a ground Pin is drawn 16.3 to 19.7 px wide. At 20 px it is a dot (its edge at 0.8 of its
-    // radius), at 16 px a body, and each time the pixels agree with the radius the press reads.
-    await page.locator('.zoom button[aria-label="Fit the map"]').click();
-    await settle(page);
-    const cb = await page.locator('canvas.surface-3d').boundingBox();
-    let mid = null;
-    for (let k = 0; k < 120 && !mid; k++) {
-      mid = (await clearPins(page)).find((a) => a.px >= 16.3 && a.px <= 19.7) ?? null;
-      if (mid) break;
-      await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
-      await page.mouse.wheel(0, -20);
-      await page.waitForTimeout(60);
-    }
-    c('a Pin drawn between 16 and 20 px is found', !!mid, mid ? `${mid.name} ${mid.px.toFixed(1)} px` : 'none');
-    if (mid) {
-      await btn('20 pixels').click();
-      await settle(page);
-      const at20 = (await ratios(page, [mid.k]))[0];
-      c('at 20 px it is a dot, drawn at the radius the press reads, from the pixels', !!at20 && !at20.icon && at20.drawn !== null && near(at20), at20 ? words([at20]) : 'not read');
-      await btn('16 pixels').click();
-      await settle(page);
-      const at16 = (await ratios(page, [mid.k]))[0];
-      c('at 16 px it is its icon, drawn at the radius the press reads, from the pixels', !!at16 && at16.icon && at16.drawn !== null && near(at16), at16 ? words([at16]) : 'not read');
-    }
-  }
   if (phone || dpr !== 1) {
     await ctx.close();
     c('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
     return;
   }
 
-  // A reload keeps the look.
-  await open();
-  v = await v3(page);
-  c('after a reload the icon look from 16 px', v.look === 'icons' && v.from === 16 && (await pressed('Icons')) && (await pressed('16 pixels')), JSON.stringify({ look: v.look, from: v.from }));
-
-  // Flat hides the switch; 3D brings it back with the look.
+  // Flat, then 3D again: the icons again; the WebGL context lost, then Try 3D again: the icons again.
   await page.click('button.view-toggle');
   await settle(page);
-  c('Flat: the switch is not shown', !(await row.isVisible()) && (await v3(page)).state === 'off');
+  c('Flat: drawn flat', (await v3(page)).state === 'off');
   await page.click('button.view-toggle');
   await on3d();
   await settle(page);
   v = await v3(page);
-  c('3D again: the switch and the icon look back', (await row.isVisible()) && v.look === 'icons' && v.from === 16 && v.canvases === 1, JSON.stringify({ look: v.look, canvases: v.canvases }));
-
-  // The WebGL context lost: drawn flat with its line, the switch gone, the focus on it handed to the
-  // Flat or 3D button; Try 3D again brings the icon look back.
-  await btn('Icons').focus();
+  c('3D again: the icons from 16 px', v.look === 'icons' && v.from === 16 && v.canvases === 1, JSON.stringify({ look: v.look, canvases: v.canvases }));
   await page.evaluate(() => {
     const cv = document.querySelector('canvas.surface-3d');
     (cv.getContext('webgl2') ?? cv.getContext('webgl'))?.getExtension('WEBGL_lose_context')?.loseContext();
   });
   await page.waitForFunction(() => window.__mapper.view3d?.state === 'failed', null, { timeout: 10_000 }).catch(() => {});
-  const lost = await v3(page);
-  const focusLost = await page.evaluate(() => document.activeElement?.className ?? document.activeElement?.tagName);
-  c('WebGL lost: drawn flat, the switch gone, its focus on the Flat or 3D button', lost.state === 'failed' && !(await row.isVisible()) && String(focusLost).includes('view-toggle'), `${lost.state} ${focusLost}`);
+  c('WebGL lost: drawn flat', (await v3(page)).state === 'failed');
   await page.click('.line3d button');
   await on3d();
   await settle(page);
   v = await v3(page);
-  c('Try 3D again: the icon look from 16 px', v.look === 'icons' && v.from === 16 && (await row.isVisible()), JSON.stringify({ state: v.state, look: v.look }));
-
-  // Dots again: the dots as before, kept with the threshold for the next Icons.
-  await btn('Dots').click();
-  await settle(page);
-  v = await v3(page);
-  c('Dots: the dots again, kept with the threshold, no threshold shown', v.look === 'dots' && v.icons === 0 && (await stored()) === 'dots:16' && !(await btn('16 pixels').isVisible()), `${v.look} ${await stored()}`);
-  const dots = await ratios(page);
-  c('Dots: each Pin drawn 9 px wide again, from the pixels', ratiosOk(dots) && dots.every((x) => x.px === 9), words(dots));
-  c('Dots: the stems still drawn', v.stems === 2);
-  await btn('Icons').click();
-  await settle(page);
-  c('Icons again comes back from 16 px, as chosen before Dots', (await v3(page)).from === 16 && (await pressed('16 pixels')));
+  c('Try 3D again: the icons from 16 px', v.look === 'icons' && v.from === 16, JSON.stringify({ state: v.state, look: v.look }));
   await ctx.close();
   c('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
-  // Junk kept, and a storage that throws: the dots, and the switch still works.
-  for (const [what, script] of [
-    ['junk kept', `localStorage.setItem('${LOOK_KEY}', 'icons:17')`],
-    ['a storage that throws', `Object.defineProperty(window, 'localStorage', { get() { throw new Error('denied'); } })`],
-  ]) {
+  // What the switch once kept matters no more: a stored "dots" still draws the icons.
+  {
     const cx = await browser.newContext(opts);
     await cx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
-    await cx.addInitScript(script);
+    await cx.addInitScript("localStorage.setItem('mapper.points3d', 'dots:20')");
     const pg = await cx.newPage();
-    const errs = [];
-    pg.on('pageerror', (e) => errs.push(String(e)));
     await pg.goto(`${base}/?world=${W}&map=${MAP}`);
-    const ok = await pg.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).then(() => true, () => false);
-    const a = await pg.evaluate(() => window.__mapper.view3d);
-    await pg.locator('.look3d').getByRole('button', { name: 'Icons', exact: true }).click();
-    await pg.waitForTimeout(200);
+    await pg.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(() => {});
     const b = await pg.evaluate(() => window.__mapper.view3d);
-    c(`${what}: the dots, and Icons still draws`, ok && a.look === 'dots' && b.look === 'icons' && errs.length === 0, `${a.look} then ${b.look} ${errs.join(' | ')}`);
+    c('an old stored look is not read: the icons from 16 px', b?.look === 'icons' && b?.from === 16, JSON.stringify(b && { look: b.look, from: b.from }));
     await cx.close();
   }
 
-  // A browser that cannot draw the icons (no Path2D): Icons leaves the dots drawn, the switch on Dots and
-  // the dots kept, never a pressed Icons over dots.
+  // A browser that cannot draw the icons (no Path2D): the dots, drawn 9 px wide as before, read from the pixels.
   {
     const cx = await browser.newContext(opts);
     await cx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
     await cx.addInitScript('delete window.Path2D');
     const pg = await cx.newPage();
+    const errs = [];
+    pg.on('pageerror', (e) => errs.push(String(e)));
     await pg.goto(`${base}/?world=${W}&map=${MAP}`);
-    await pg.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(() => {});
-    const r = pg.locator('.look3d');
-    await r.getByRole('button', { name: 'Icons', exact: true }).click();
-    await pg.waitForTimeout(200);
+    await pg.waitForFunction(() => window.__mapper.scene?.complete && window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(() => {});
+    await settle(pg);
     const b = await pg.evaluate(() => window.__mapper.view3d);
-    const kept = await pg.evaluate((k) => localStorage.getItem(k), LOOK_KEY);
-    const on = await r.getByRole('button', { name: 'Dots', exact: true }).getAttribute('aria-pressed');
-    c('no Path2D: Icons leaves the dots, Dots pressed and kept', b.look === 'dots' && on === 'true' && kept === 'dots:20', `${b.look} ${on} ${kept}`);
-    const said = await pg.locator('.status').innerText();
-    c('no Path2D: a line says the icons cannot be drawn', said.includes('This browser cannot draw the icons, so the Pins stay dots.'), said.slice(0, 160));
+    c('no Path2D: the dots, the stems as before', b.look === 'dots' && b.icons === 0 && b.stems === 2 && errs.length === 0, `${b.look} ${b.stems} ${errs.join(' | ')}`);
+    const dots = await ratios(pg);
+    c('no Path2D: each Pin drawn 9 px wide, from the pixels', ratiosOk(dots) && dots.every((x) => x.px === 9), words(dots));
     await cx.close();
   }
 
@@ -520,7 +442,6 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
   {
     const cx = await browser.newContext(opts);
     await cx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
-    await cx.addInitScript(`localStorage.setItem('${LOOK_KEY}', 'icons:20')`);
     const pg = await cx.newPage();
     await pg.goto(`${base}/?world=${W}&map=${OMAP}`);
     await pg.waitForFunction(() => window.__mapper.scene?.complete && window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(() => {});
@@ -552,73 +473,74 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
   }
 }
 
-/** The measure readout and the switch stack in the lower left; each button of the switch can still be pressed. */
-async function readoutWalk({ browser, opts, check, base }) {
-  const cx = await browser.newContext(opts);
-  await cx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
-  const pg = await cx.newPage();
-  await pg.goto(`${base}/?world=${W}&map=${MAP}&measure=1`);
-  await pg.waitForFunction(() => window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(() => {});
-  await pg.waitForTimeout(300);
-  const hits = await pg.evaluate(() => [...document.querySelectorAll('.look3d button')].filter((b) => b.getClientRects().length).map((b) => {
-    const r = b.getBoundingClientRect();
-    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === b;
-  }));
-  const shown = await pg.locator('.readout').isVisible();
-  check('desk look3d with the measure readout, every button of the switch can be pressed', shown && hits.length >= 2 && hits.every(Boolean), `readout ${shown}, ${JSON.stringify(hits)}`);
-  await cx.close();
-}
-
 /** The section for one viewport of the played walk: at a desk, device ratio 1 then 2 (both on the dark scheme); a touch phone as given. */
 export async function look3dWalk({ browser, which, vp, opts, check, base }) {
   if (vp === 'phone') return lookWalk({ browser, which, tag: 'phone', opts, check, base, phone: true, dpr: opts.deviceScaleFactor ?? 1 });
-  await readoutWalk({ browser, opts, check, base });
   await lookWalk({ browser, which, tag: 'desk', opts: { ...opts, colorScheme: 'dark' }, check, base });
   await lookWalk({ browser, which, tag: 'desk-dpr2', opts: { ...opts, colorScheme: 'dark', deviceScaleFactor: 2 }, check, base, dpr: 2 });
 }
 
-/** Frame time on 5,000 Pins: Dots and Icons taken in turn nine times each, 300 frames a time, the median of each, at Fit and nearer. */
-async function benchWalk({ browser, which, base, check }) {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
-  await ctx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
-  const page = await ctx.newPage();
-  await page.goto(`${base}/?world=${BW}&map=${BMAP}`);
-  await page.waitForFunction(() => window.__mapper.scene?.complete && window.__mapper.view3d?.state === 'on', null, { timeout: 120_000 });
-  await page.waitForTimeout(500);
-  const row = page.locator('.look3d');
-  const pinsDrawn = (await page.evaluate(() => window.__mapper.scene.kinds.pin)) ?? 0;
-  const one = () => page.evaluate(() => window.__mapper.bench3d(300));
-  const look = async (name) => { await row.getByRole('button', { name, exact: true }).click(); await page.waitForTimeout(150); await one(); };
-  const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
-  const take = async () => {
-    const d = [];
-    const i = [];
-    for (let k = 0; k < 9; k++) {
-      await look('Dots');
-      d.push((await one()).ms);
-      await look('Icons');
-      i.push((await one()).ms);
+/**
+ * Frame time on 5,000 Pins, the icons against the dots. The dots are a build that draws them (BENCH_DOTS,
+ * a dist of the mapper before the icons, served beside this one): a page with no Path2D draws the dots
+ * too, but its flat map fails and says so, which moves the fit. One page at a time, so one WebGL
+ * context draws: the icons, the dots, the icons, the dots, each page loaded fresh, at Fit and then
+ * nearer (the same wheel at the same place), five times 300 frames each; the medians of the ten.
+ */
+async function benchWalk({ browser, which, base, dotsBase, check }) {
+  const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2; };
+  const runs = { icons: { fit: [], near: [], gpu: '', look: [], cams: [], fits: [], iconsFit: 0, iconsNear: 0 }, dots: { fit: [], near: [], gpu: '', look: [], cams: [], fits: [] } };
+  let pinsDrawn = 0;
+  for (const round of [0, 1]) {
+    for (const name of ['icons', 'dots']) {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+      await ctx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
+      const pg = await ctx.newPage();
+      if (name === 'dots' && !dotsBase) await pg.addInitScript('delete window.Path2D');
+      await pg.goto(`${name === 'dots' && dotsBase ? dotsBase : base}/?world=${BW}&map=${BMAP}`);
+      await pg.waitForFunction(() => window.__mapper.scene?.complete && window.__mapper.view3d?.state === 'on', null, { timeout: 120_000 });
+      await pg.waitForTimeout(500);
+      const R = runs[name];
+      const v = await pg.evaluate(() => window.__mapper.view3d);
+      R.look.push(v.look);
+      pinsDrawn = (await pg.evaluate(() => window.__mapper.scene.kinds.pin)) ?? 0;
+      const one = () => pg.evaluate(() => window.__mapper.bench3d(300));
+      R.gpu = (await one()).gpu;
+      R.fits.push(`fit ${JSON.stringify(v.cam)} top ${await pg.evaluate(() => Math.round(document.querySelector('.top').getBoundingClientRect().height))} ${await pg.evaluate(() => JSON.stringify(document.querySelector('.status').innerText.slice(0, 160)))}`);
+      for (let k = 0; k < 5; k++) R.fit.push((await one()).ms);
+      if (name === 'icons' && round === 0) R.iconsFit = (await pg.evaluate(() => window.__mapper.view3d)).icons;
+      const box = await pg.locator('canvas.surface-3d').boundingBox();
+      await pg.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      // Each step drawn before the next: a slower page must not merge two steps into one.
+      for (let k = 0; k < 8; k++) {
+        const before = await pg.evaluate(() => window.__mapper.view3d.draws);
+        await pg.mouse.wheel(0, -240);
+        await pg.waitForFunction((n) => window.__mapper.view3d.draws > n, before, { timeout: 10_000 }).catch(() => {});
+        await pg.waitForTimeout(150);
+      }
+      await pg.waitForTimeout(400);
+      R.cams.push(JSON.stringify((await pg.evaluate(() => window.__mapper.view3d)).cam));
+      if (name === 'icons' && round === 0) {
+        R.iconsNear = (await pg.evaluate(() => window.__mapper.view3d)).icons;
+        await pg.screenshot({ path: `.scratch/shots/look3d-${which}-bench-near.png` });
+      }
+      await one();
+      for (let k = 0; k < 5; k++) R.near.push((await one()).ms);
+      await ctx.close();
     }
-    return { dots: median(d), icons: median(i), d, i };
-  };
-  const fit = await take();
-  const fitIcons = (await page.evaluate(() => window.__mapper.view3d)).icons;
-  const box = await page.locator('canvas.surface-3d').boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  for (let k = 0; k < 8; k++) { await page.mouse.wheel(0, -240); await page.waitForTimeout(60); }
-  await page.waitForTimeout(300);
-  const near = await take();
-  const nearIcons = (await page.evaluate(() => window.__mapper.view3d)).icons;
-  const gpu = (await one()).gpu;
-  await page.screenshot({ path: `.scratch/shots/look3d-${which}-bench-near.png` });
+  }
+  const I = runs.icons;
+  const D = runs.dots;
+  const fit = { icons: median(I.fit), dots: median(D.fit) };
+  const near = { icons: median(I.near), dots: median(D.near) };
+  const camSame = new Set([...I.cams, ...D.cams]).size === 1 && new Set([...I.fits, ...D.fits]).size === 1;
   const f = (x) => x.toFixed(2);
-  console.log(`bench ${which}: renderer ${gpu}`);
-  console.log(`bench ${which}: ${pinsDrawn} Pins; ms a frame (median of 9 in turn, 300 frames each), Fit dots ${f(fit.dots)} icons ${f(fit.icons)} (${fitIcons} icons drawn); nearer dots ${f(near.dots)} icons ${f(near.icons)} (${nearIcons} icons drawn)`);
-  console.log(`bench ${which}: runs Fit dots ${fit.d.map(f).join(' ')} | icons ${fit.i.map(f).join(' ')}; nearer dots ${near.d.map(f).join(' ')} | icons ${near.i.map(f).join(' ')}`);
-  check(`bench a world of 5,000 Pins drawn`, pinsDrawn >= BENCH_N, `${pinsDrawn}`);
+  console.log(`bench ${which}: renderer ${I.gpu}${D.gpu !== I.gpu ? ` (the dots' page: ${D.gpu})` : ''}`);
+  console.log(`bench ${which}: ${pinsDrawn} Pins; ms a frame (median of 10, 300 frames each, one page at a time), Fit dots ${f(fit.dots)} icons ${f(fit.icons)} (${I.iconsFit} icons drawn); nearer dots ${f(near.dots)} icons ${f(near.icons)} (${I.iconsNear} icons drawn)`);
+  console.log(`bench ${which}: runs Fit dots ${D.fit.map(f).join(' ')} | icons ${I.fit.map(f).join(' ')}; nearer dots ${D.near.map(f).join(' ')} | icons ${I.near.map(f).join(' ')}`);
+  check(`bench a world of 5,000 Pins drawn, the icons and the dots, the same camera nearer on every page`, pinsDrawn >= BENCH_N && I.look.every((l) => l === 'icons') && D.look.every((l) => l === 'dots') && camSame, `${pinsDrawn} ${I.look} ${D.look} cams ${[...new Set([...I.fits, ...D.fits, ...I.cams, ...D.cams])].join(' | ')}`);
   check(`bench Icons within 10% of Dots at Fit (${((fit.icons / fit.dots) * 100).toFixed(0)}%)`, fit.icons <= fit.dots * 1.1);
   check(`bench Icons within 10% of Dots nearer (${((near.icons / near.dots) * 100).toFixed(0)}%)`, near.icons <= near.dots * 1.1);
-  await ctx.close();
 }
 
 // Run alone: the desk (ratio 1 and 2) and the phone in one engine, or the bench.
@@ -627,12 +549,15 @@ if (process.argv[1]?.replace(/\\/g, '/').endsWith('walk/look3d.mjs')) {
   const doBench = process.argv.includes('--bench');
   const engine = which === 'firefox' ? firefox : chromium;
   const site = await serve(process.env.MAPPER_DIST ?? 'dist', Number(process.env.MAPPER_PORT ?? 4187), '127.0.0.1', { drop: which === 'firefox' ? ['Cross-Origin-Opener-Policy'] : [] });
+  const dotsSite = doBench && process.env.BENCH_DOTS ? await serve(process.env.BENCH_DOTS, Number(process.env.MAPPER_PORT ?? 4187) + 1, '127.0.0.1', { drop: which === 'firefox' ? ['Cross-Origin-Opener-Policy'] : [] }) : null;
   // The bench draws on the machine's GPU in Chromium (headless Chromium otherwise draws WebGL in software, SwiftShader).
-  const browser = await engine.launch(doBench && which === 'chromium' ? { args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist'] } : {});
+  // LOOK_GPU=high asks Chromium for the machine's high-performance GPU where it has two (a laptop's).
+  const gpuArgs = ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', ...(process.env.LOOK_GPU === 'high' ? ['--force_high_performance_gpu'] : [])];
+  const browser = await engine.launch(doBench && which === 'chromium' ? { args: gpuArgs } : {});
   const watchdog = setTimeout(() => {
-    console.error('look3d: watchdog, 600 s');
+    console.error(`look3d: watchdog, ${doBench ? 1700 : 600} s`);
     process.exit(2);
-  }, 600_000);
+  }, doBench ? 1_700_000 : 600_000);
   let checks = 0;
   const fails = [];
   const check = (label, ok, detail = '') => {
@@ -646,7 +571,7 @@ if (process.argv[1]?.replace(/\\/g, '/').endsWith('walk/look3d.mjs')) {
   ];
   for (const [vp, opts] of runs) {
     try {
-      if (vp === 'bench') await benchWalk({ browser, which, base: site.url, check });
+      if (vp === 'bench') await benchWalk({ browser, which, base: site.url, dotsBase: dotsSite?.url ?? null, check });
       else await look3dWalk({ browser, which, vp, opts, check, base: site.url });
     } catch (e) {
       check(`${vp} section look3d ran to its end`, false, String(e?.message ?? e).split('\n')[0].slice(0, 300));
@@ -655,6 +580,7 @@ if (process.argv[1]?.replace(/\\/g, '/').endsWith('walk/look3d.mjs')) {
   clearTimeout(watchdog);
   await browser.close();
   await site.close();
+  await dotsSite?.close();
   console.log(`look3d ${which}: ${checks - fails.length} of ${checks} checks passed`);
   for (const f of fails) console.log(`  FAIL ${f}`);
   process.exit(fails.length ? 1 : 0);
