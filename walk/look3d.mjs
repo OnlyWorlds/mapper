@@ -39,7 +39,7 @@ const E = {
   wren: { id: id(W, 106), type: 'creature', name: 'Wren', at: [120, 200, 0] },
   ledger: { id: id(W, 107), type: 'object', name: 'The ledger', at: [880, 180, 0] },
   feast: { id: id(W, 108), type: 'event', name: 'The feast', at: [870, 780, 0] },
-  // At the frame's near left corner: at Fit the lowest on screen, where the lower-left switch sits.
+  // At the frame's near left corner: at Fit the lowest Pin on screen, near the foot of the view.
   gate: { id: id(W, 110), type: 'construct', name: 'The gate', at: [20, 20, 0] },
   // At the frame's centre, where the camera aims at Fit: the zoom buttons move toward it, so it stays in view and grows.
   well: { id: id(W, 109), type: 'institution', name: 'The well', at: [500, 500, 200] },
@@ -434,6 +434,48 @@ async function lookWalk({ browser, which, tag, opts, check, base, phone = false,
     c('no Path2D: the dots, the stems as before', b.look === 'dots' && b.icons === 0 && b.stems === 2 && errs.length === 0, `${b.look} ${b.stems} ${errs.join(' | ')}`);
     const dots = await ratios(pg);
     c('no Path2D: each Pin drawn 9 px wide, from the pixels', ratiosOk(dots) && dots.every((x) => x.px === 9), words(dots));
+    await cx.close();
+  }
+
+  // A ring round a hovered Pin is drawn with one program, linked once: moving the view with the pointer
+  // resting on the Pin (the wheel keeps the point under the pointer) links no program again.
+  {
+    const cx = await browser.newContext(opts);
+    await cx.route('https://www.onlyworlds.com/**', (route) => route.fulfill(answer(route.request().url())));
+    await cx.addInitScript(() => {
+      window.__links = 0;
+      for (const C of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+        if (!C) continue;
+        const real = C.prototype.linkProgram;
+        C.prototype.linkProgram = function (prog) {
+          window.__links++;
+          return real.call(this, prog);
+        };
+      }
+    });
+    const pg = await cx.newPage();
+    await pg.goto(`${base}/?world=${W}&map=${MAP}`);
+    await pg.waitForFunction(() => window.__mapper.scene?.complete && window.__mapper.view3d?.state === 'on', null, { timeout: 30_000 }).catch(() => {});
+    await settle(pg);
+    const m = await pg.evaluate((q) => window.__mapper.drawn3d(q), pinOf(E.mara));
+    await pg.mouse.move(m.x, m.y);
+    await pg.waitForTimeout(300);
+    const hovered = (await pg.evaluate(() => document.querySelector('canvas.surface-3d').style.cursor)) === 'pointer';
+    // The ring itself, read from the pixels with the pointer still on her: its outer edge 5.5 px past
+    // her drawn edge (3 clear and a 2.5 px line), and never under 17 px across.
+    const ringR = Math.max(8.5, m.r + 5.5);
+    const seen = (await pixelRadii(pg, [['Mara', m.x, m.y, ringR + 8, ringR]])).Mara;
+    c('the hover ring is drawn round her as drawn, from the pixels', hovered && seen.r !== null && Math.abs(seen.r - ringR) <= 1.5, `ring ${ringR.toFixed(1)}, read ${seen.r?.toFixed(1)}`);
+    const read = () => pg.evaluate(() => ({ links: window.__links, draws: window.__mapper.view3d.draws }));
+    const a = await read();
+    for (let k = 0; k < 10; k++) {
+      const before = (await read()).draws;
+      await pg.mouse.wheel(0, -60);
+      await pg.waitForFunction((n) => window.__mapper.view3d.draws > n, before, { timeout: 5000 }).catch(() => {});
+      await pg.waitForTimeout(60);
+    }
+    const b = await read();
+    c('a hovered Pin\'s ring links no program again while the view moves', hovered && b.draws - a.draws >= 8 && b.links === a.links, `hovered ${hovered}, ${b.draws - a.draws} draws, ${b.links - a.links} links`);
     await cx.close();
   }
 
