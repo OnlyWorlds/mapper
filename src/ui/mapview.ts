@@ -67,6 +67,7 @@ export const IMPORT_LIMIT_MS = 20_000;
 type State3D = 'off' | 'loading' | 'on' | 'failed';
 
 const GROUND_REFUSED = "The ground's picture cannot be drawn in 3D (its host does not allow it); Flat draws it.";
+const ICONS_REFUSED = 'This browser cannot draw the icons, so the Pins stay dots.';
 
 /**
  * The 3D module, imported once per page. A failed import stays failed for the page's life (both
@@ -216,6 +217,8 @@ export class MapView implements ModeHost {
   private lookRow: { row: HTMLElement; dots: HTMLButtonElement; icons: HTMLButtonElement; fromGroup: HTMLElement; from16: HTMLButtonElement; from20: HTMLButtonElement } | null = null;
   /** The selection the 3D labels were last placed for in the icon look (a selected Pin grows, so its name moves out). */
   private labelSel = '';
+  /** The lower-left corner: the measure readout and the 3D look's switch. */
+  private corner!: HTMLElement;
 
   constructor(
     private host: MapViewHost,
@@ -256,9 +259,10 @@ export class MapView implements ModeHost {
     const readout = host.measure ? h('div', { class: 'readout', 'aria-live': 'off' }) : null;
     // The 3D view's labels: text nodes over its canvas (the list view is what a screen reader reads).
     this.labelBox = h('div', { class: 'labels3d', 'aria-hidden': 'true', hidden: true });
-    // The 3D look's switch sits in the lower left, never in the top block: the 3D fit keeps clear of
-    // that block, so a row there would move the picture in either look.
-    this.root = h('div', { class: 'mapview' }, this.canvas, this.labelBox, head, zoom, this.lookRow?.row ?? null, panel, tip, lost, readout);
+    // The lower left holds the measure readout above the 3D look's switch, stacked, never one over the
+    // other; the 3D fit keeps clear of it as it does of the top block.
+    this.corner = h('div', { class: 'corner' }, readout, this.lookRow?.row ?? null);
+    this.root = h('div', { class: 'mapview' }, this.canvas, this.labelBox, head, zoom, this.corner, panel, tip, lost);
     this.els = { title, head, extra, lines, linesBtn, listBtn, panel, card, list, tip, readout, lost };
     parent.append(this.root);
     this.listen();
@@ -315,8 +319,13 @@ export class MapView implements ModeHost {
     this.surfacesMade++;
     this.surface = surface;
     this.state3d = 'on';
-    // The kept look; where the icons cannot be drawn here, the dots (nothing kept changes).
-    if (!surface.look(this.look3d.icons, this.look3d.from)) this.look3d = { icons: false, from: this.look3d.from };
+    // The kept look; where the icons cannot be drawn here, the dots (nothing kept changes), said once.
+    if (!surface.look(this.look3d.icons, this.look3d.from)) {
+      this.look3d = { icons: false, from: this.look3d.from };
+      this.iconsRefused();
+    }
+    // The switch shows now, so the first fit keeps clear of it.
+    this.syncLook();
     this.moved3d = false;
     this.placed3d = false;
     this.centred3d = false;
@@ -419,8 +428,8 @@ export class MapView implements ModeHost {
   private makeLookRow(): NonNullable<MapView['lookRow']> {
     const dots = button('Dots', () => this.setLook(false, this.look3d.from), { class: 'seg', 'aria-pressed': 'true' });
     const icons = button('Icons', () => this.setLook(true, this.look3d.from), { class: 'seg', 'aria-pressed': 'false' });
-    const from16 = button('16 px', () => this.setLook(true, 16), { class: 'seg', 'aria-pressed': 'false' });
-    const from20 = button('20 px', () => this.setLook(true, 20), { class: 'seg', 'aria-pressed': 'true' });
+    const from16 = button('16 px', () => this.setLook(true, 16), { class: 'seg', 'aria-pressed': 'false', 'aria-label': '16 pixels' });
+    const from20 = button('20 px', () => this.setLook(true, 20), { class: 'seg', 'aria-pressed': 'true', 'aria-label': '20 pixels' });
     const fromGroup = h('div', { class: 'segs', role: 'group', 'aria-label': 'A dot turns into its icon from' }, h('span', { class: 'segs-name', 'aria-hidden': 'true' }, 'Icon from'), from16, from20);
     const row = h('div', { class: 'look3d', hidden: true },
       h('div', { class: 'segs', role: 'group', 'aria-label': 'Points' }, h('span', { class: 'segs-name', 'aria-hidden': 'true' }, 'Points'), dots, icons),
@@ -433,9 +442,19 @@ export class MapView implements ModeHost {
     const drawn = this.surface ? this.surface.look(icons, from) : true;
     this.look3d = { icons: icons && drawn, from };
     storeLook(this.look3d);
+    if (icons && !drawn) this.iconsRefused();
     this.syncLook();
+    // The switch can change its height (the threshold's row): an untouched fit keeps clear of it.
+    this.fit3d();
     this.scheduleRest(0);
     this.invalidate();
+  }
+
+  /** The browser cannot draw the icons: the Pins stay dots, and a line says so. */
+  private iconsRefused(): void {
+    if (this.notes3d.includes(ICONS_REFUSED)) return;
+    this.notes3d.push(ICONS_REFUSED);
+    this.renderStatus();
   }
 
   /** The switch shows the look, and shows at all only while the 3D view is drawn. */
@@ -459,7 +478,7 @@ export class MapView implements ModeHost {
   private fit3d(): void {
     if (!this.surface || this.moved3d || this.placed3d) return;
     this.pageMove = true;
-    this.surface.fit(this.topInset());
+    this.surface.fit(this.topInset(), this.bottomInset());
     this.pageMove = false;
   }
 
@@ -669,6 +688,13 @@ export class MapView implements ModeHost {
     return Math.max(0, this.els.head.getBoundingClientRect().bottom - this.root.getBoundingClientRect().top + 4);
   }
 
+  /** How far the lower-left corner (the 3D look's switch, the readout) reaches up from the foot, CSS px; 0 when it shows nothing. */
+  private bottomInset(): number {
+    const c = this.corner.getBoundingClientRect();
+    if (c.height <= 0) return 0;
+    return Math.max(0, this.root.getBoundingClientRect().bottom - c.top + 4);
+  }
+
   /** A fit inside what the overlays leave free: below the bar and its status lines. */
   private fitCam(w: number, hgt: number): Camera {
     return fit(w, hgt, this.view, 0.94, { top: this.topInset(), right: 0, bottom: 0, left: 0 });
@@ -715,7 +741,7 @@ export class MapView implements ModeHost {
 
   private fitButton(): void {
     if (this.surface && this.is3d) {
-      this.surface.fit(this.topInset());
+      this.surface.fit(this.topInset(), this.bottomInset());
       return;
     }
     if (!this.scene) return;
@@ -908,7 +934,7 @@ export class MapView implements ModeHost {
     this.dpr = window.devicePixelRatio || 1;
     this.renderer.resize(this.view, this.dpr);
     if (this.surface) {
-      this.surface.resize(this.view, this.dpr, this.topInset());
+      this.surface.resize(this.view, this.dpr, this.topInset(), this.bottomInset());
       this.fit3d();
     }
     if (this.camera && this.scene && !this.personMoved && !this.at && !this.focus) {
@@ -1235,6 +1261,10 @@ export class MapView implements ModeHost {
       const p = this.els.panel.getBoundingClientRect();
       if (p.top - root.top > this.view.h * 0.3) bottom = p.top - root.top;
       else right = p.left - root.left;
+    }
+    if (this.is3d) {
+      const c = this.corner.getBoundingClientRect();
+      if (c.height > 0 && c.top - root.top > this.view.h * 0.3) bottom = Math.min(bottom, c.top - root.top);
     }
     if (bottom - top < 60 || right < 60) return;
     const tx = right / 2;
