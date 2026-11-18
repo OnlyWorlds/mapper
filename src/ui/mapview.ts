@@ -312,7 +312,7 @@ export class MapView implements ModeHost {
     // view it described (the 3D camera is never in the address).
     this.host.writer.cancelPending();
     if (this.host.writer.current().at) this.host.writer.setView(this.reading.id, false);
-    this.line3d = { text: isPhone() ? 'In 3D: one finger turns, two fingers zoom and move.' : 'In 3D: drag to turn, the wheel or two fingers to zoom, right-drag to move.', cls: 'note', retry: null };
+    this.line3d = { text: isPhone() ? 'In 3D: one finger turns, two fingers zoom and move.' : 'In 3D: drag to turn, the wheel or two fingers to zoom, right- or middle-drag to move.', cls: 'note', retry: null };
     this.root.classList.add('in-3d');
     this.labelBox.hidden = false;
     const hadFocus = document.activeElement === this.canvas;

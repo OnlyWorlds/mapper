@@ -362,6 +362,27 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     await waitUntil(page, () => window.__mapper.view3d?.state === 'on', null, 20_000);
     check(`${vp} links3d 3D drops view=flat`, (await where()) === `?world=${LW}&layout=by-links-3d`, await where());
 
+    // 7b. A middle drag moves the picture, as a right drag does; the wheel zooms. A sideways middle drag
+    // stood still while it zoomed (a zoom reads only the up-down part), so the camera moving is the move itself.
+    await page.waitForTimeout(400);
+    await page.evaluate(() => { window.__midPrevented = null; document.addEventListener('mousedown', (e) => { if (e.button === 1) window.__midPrevented = e.defaultPrevented; }); });
+    const camAt = async () => (await page.evaluate(() => window.__mapper.view3d?.cam)) ?? [];
+    const cam0 = await camAt();
+    await page.mouse.move(640, 500);
+    await page.mouse.down({ button: 'middle' });
+    await page.mouse.move(760, 500, { steps: 8 });
+    await page.mouse.up({ button: 'middle' });
+    await page.waitForTimeout(300);
+    const cam1 = await camAt();
+    check(`${vp} links3d a sideways middle drag moves the 3D picture`, cam0.length === 3 && cam1.join() !== cam0.join(), `${cam0} -> ${cam1}`);
+    check(`${vp} links3d a middle press is the picture's, never the browser's autoscroll`, (await page.evaluate(() => window.__midPrevented)) === true, String(await page.evaluate(() => window.__midPrevented)));
+    await page.mouse.move(640, 500);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(520, 500, { steps: 8 });
+    await page.mouse.up({ button: 'right' });
+    await page.waitForTimeout(300);
+    check(`${vp} links3d a right drag still moves it`, (await camAt()).join() !== cam1.join(), `${cam1} -> ${await camAt()}`);
+
     // 8. An element added, then a reload (a reload reads again): it alone is placed new; nothing else moves.
     const before = await holdOf(KEY);
     state.extra = true;

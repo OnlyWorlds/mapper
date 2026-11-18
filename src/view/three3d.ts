@@ -18,6 +18,7 @@ import {
   LinearFilter,
   Mesh,
   MeshBasicMaterial,
+  MOUSE,
   PerspectiveCamera,
   Plane,
   PlaneGeometry,
@@ -199,6 +200,11 @@ export class Surface3D implements Projector {
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.enableDamping = false;
     this.controls.screenSpacePanning = false;
+    // Left drag turns; middle or right drag moves; the wheel zooms (a middle drag used to zoom slowly, a second zoom
+    // beside the wheel).
+    this.controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.PAN };
+    // A middle press would otherwise start the browser's own autoscroll on Windows.
+    this.canvas.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
     this.controls.zoomToCursor = true;
     this.controls.minPolarAngle = 0.02;
     this.controls.maxPolarAngle = Math.PI - 0.02;
