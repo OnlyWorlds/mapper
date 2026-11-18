@@ -58,6 +58,14 @@ Object.defineProperty(window, '__mapper', {
     screenOf(id: string) {
       return pinPoint(id);
     },
+    /** A Pin item as the 3D view draws it now: where, how wide, an icon or a dot. */
+    drawn3d(id: string) {
+      return app.map?.drawn3d(id) ?? null;
+    },
+    /** The 3D view's frame time over this many frames, each waited for, and the renderer that drew them. */
+    bench3d(frames: number) {
+      return app.map?.bench3d(frames) ?? null;
+    },
     /** A point in the open Map's frame on screen, in whichever view is drawn. */
     pointOf(x: number, y: number, z: number) {
       return app.map?.pointOnScreen(x, y, z) ?? null;

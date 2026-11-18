@@ -26,6 +26,7 @@ import {
   PointsMaterial,
   Raycaster,
   RGBAFormat,
+  ShaderMaterial,
   Scene as ThreeScene,
   SRGBColorSpace,
   Texture,
@@ -38,9 +39,11 @@ import { GROUP_COLORS, type ElementGroup } from '@onlyworlds/sdk';
 import type { View } from '../core/camera';
 import { focusOf } from '../core/focus';
 import { clipToNear, type Projector } from '../core/hit3d';
+import { drawn, ICON_FROM, NEAR_SCALE, OPEN_SCALE, type Drawn, type Lit } from '../core/look3d';
 import type { Scene } from '../core/scene';
 import type { ItemKind, LineItem, PinItem, ZoneItem } from '../core/types';
 import { MAX_SIDE, type Picture } from './picture';
+import { iconAtlas, iconMaterial, ringMaterial, sharedLook, type IconAtlas, type SharedLook } from './point-look';
 import type { Theme } from './render';
 
 export interface Pass3D {
@@ -150,7 +153,7 @@ export class Surface3D implements Projector {
   private frame3: Frame3D = { groundZ: 0, depth: 0, stems: true };
   private textures = { dot: roundTexture(null), ring: roundTexture(0.3) };
   /** What the list built: disposed and made again only when the list or the theme changes. */
-  private built: { scene: Scene; theme: Theme; objects: (Mesh | LineSegments | Points)[] } | null = null;
+  private built: { scene: Scene; theme: Theme; icons: boolean; objects: (Mesh | LineSegments | Points)[] } | null = null;
   /** The view pass's marks, made again on every render (a handful of points and segments). */
   private marks: (LineSegments | Points)[] = [];
   /** How the last pass drew, for the walks: the Pins in focus and the lines shown with them, or null. */
@@ -170,6 +173,19 @@ export class Surface3D implements Projector {
   stemCount = 0;
   /** Called when the ground's picture came without CORS and is not drawn in 3D. */
   onGroundRefused: (() => void) | null = null;
+
+  // The icon look (core/look3d.ts): off until the switch asks for it; the atlas is drawn on first use.
+  private icons = false;
+  private from: number = ICON_FROM[1];
+  private atlas: IconAtlas | null = null;
+  private shared: SharedLook | null = null;
+  /** The camera's distance when the view was fitted: a point at it is drawn at its base width. */
+  private ref = 0;
+  private dpr = 1;
+  /** The largest point sprite this GPU draws, device px. */
+  private maxSprite = 64;
+  /** Each lit Pin's light as the last pass drew it (selected 2, reached 1): the press reads the same. */
+  private lit = new Map<string, Lit>();
 
   /** Throws when the browser cannot start WebGL. */
   constructor(
@@ -196,6 +212,11 @@ export class Surface3D implements Projector {
       throw e;
     }
     this.maxTexture = Math.min(MAX_SIDE, this.renderer.capabilities.maxTextureSize || MAX_SIDE);
+    {
+      const gl = this.renderer.getContext();
+      const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as Float32Array | null;
+      if (range && range[1] >= 1) this.maxSprite = range[1];
+    }
     this.camera.up.set(0, 0, 1);
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.enableDamping = false;
@@ -232,6 +253,8 @@ export class Surface3D implements Projector {
     if (this.lift > 0 && top !== undefined) this.lift = this.liftFor(top);
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(view.w, view.h, false);
+    this.dpr = this.renderer.getPixelRatio();
+    if (this.shared) this.shared.uDpr.value = this.dpr;
     this.camera.aspect = view.w / Math.max(1, view.h);
     this.offset();
     this.camera.updateProjectionMatrix();
@@ -287,6 +310,9 @@ export class Surface3D implements Projector {
     this.controls.maxDistance = r * 8;
     this.controls.update();
     this.clip();
+    // The icon look grows a point by how much nearer it is than this.
+    this.ref = this.camera.position.distanceTo(this.controls.target);
+    if (this.shared) this.shared.uRef.value = this.ref;
     this.projDirty = true;
   }
 
@@ -374,7 +400,7 @@ export class Surface3D implements Projector {
 
   /** What the list holds, as three's objects (made again only when the list or the theme changes). */
   private build(scene: Scene, theme: Theme): void {
-    if (this.built && this.built.scene === scene && this.built.theme === theme) return;
+    if (this.built && this.built.scene === scene && this.built.theme === theme && this.built.icons === this.icons) return;
     this.clearBuilt();
     const objects: (Mesh | LineSegments | Points)[] = [];
     const gz = this.frame3.groundZ;
@@ -427,8 +453,29 @@ export class Surface3D implements Projector {
       objects.push(Object.assign(new LineSegments(segmentsGeometry(stems), new LineBasicMaterial({ color: l.color, transparent: true, opacity: Math.max(0.12, l.alpha * 0.4) })), { userData: { kind: 'pin' } }));
     }
 
-    // Pins: a ring in the ring colour under a disc in the group's colour, a constant size on screen.
-    if (pins.length) {
+    // Pins: a ring in the ring colour under a disc in the group's colour, a constant size on screen;
+    // in the icon look one set of points that grow as they near and turn into their icons.
+    if (pins.length && this.icons && this.shared) {
+      const cache = new Map<string, Color>();
+      const pos = new Float32Array(3 * pins.length);
+      const col = new Float32Array(4 * pins.length);
+      const icon = new Float32Array(pins.length);
+      pins.forEach((p, i) => {
+        let c = cache.get(p.style);
+        if (!c) cache.set(p.style, (c = css(pinColor(p.style, theme)).color));
+        pos.set([p.x, p.y, p.z], 3 * i);
+        col.set([c.r, c.g, c.b, 1], 4 * i);
+        icon[i] = this.iconOf(p);
+      });
+      const g = new BufferGeometry();
+      g.setAttribute('position', new BufferAttribute(pos, 3));
+      g.setAttribute('aCol', new BufferAttribute(col, 4));
+      g.setAttribute('aIcon', new BufferAttribute(icon, 1));
+      const pts = new Points(g, iconMaterial(this.shared, PIN_PX, 1, 0, true));
+      pts.renderOrder = 2;
+      pts.userData.kind = 'pin';
+      objects.push(pts);
+    } else if (pins.length) {
       const pts = pins.map((p) => [p.x, p.y, p.z] as [number, number, number]);
       const ring = new Points(pointsGeometry(pts), new PointsMaterial({ size: RING_PX, sizeAttenuation: false, map: this.textures.dot, color: css(theme.pinRing).color, transparent: true, alphaTest: 0.05 }));
       ring.renderOrder = 1;
@@ -445,7 +492,7 @@ export class Surface3D implements Projector {
       objects.push(ring, dots);
     }
     for (const o of objects) this.three.add(o);
-    this.built = { scene, theme, objects };
+    this.built = { scene, theme, icons: this.icons, objects };
   }
 
   private clearBuilt(): void {
@@ -526,6 +573,7 @@ export class Surface3D implements Projector {
       (m.material as { dispose(): void }).dispose();
     }
     this.marks = [];
+    this.lit.clear();
     const add = (o: LineSegments | Points) => {
       o.renderOrder = 5;
       this.marks.push(o);
@@ -568,6 +616,11 @@ export class Surface3D implements Projector {
     for (const o of this.built?.objects ?? []) {
       const kind = o.userData.kind;
       if (kind !== 'pin' && kind !== 'line') continue;
+      if (o.material instanceof ShaderMaterial) {
+        // The icon look's Pins: their own strength, the shader's.
+        o.material.uniforms.uFade.value = on ? FOCUS_DIM : 1;
+        continue;
+      }
       const m = o.material as PointsMaterial | LineBasicMaterial;
       if (m.userData.full === undefined) m.userData.full = m.opacity;
       // The whole picture's lines hide in a focus; its Pins and stems dim.
@@ -580,26 +633,162 @@ export class Surface3D implements Projector {
       if (segs.length && !pass.hidden.has('line')) add(new LineSegments(segmentsGeometry(segs), new LineBasicMaterial({ color: css(pass.theme.accent).color, transparent: true, opacity: 0.85, depthTest: false })));
       const pts: [number, number, number][] = [];
       const colors: Color[] = [];
+      const reached: PinItem[] = [];
+      const chosen: PinItem[] = [];
       for (const id of near) {
         const it = scene.byId.get(id);
         if (it?.kind !== 'pin') continue;
         pts.push([it.x, it.y, it.z]);
         colors.push(css(pinColor((it as PinItem).style, pass.theme)).color);
+        (pass.selection.has(id) ? chosen : reached).push(it as PinItem);
       }
-      if (pts.length) {
+      if (this.icons && this.shared) {
+        // The icon look: only what is lit glows, over the dimmed rest; the selected Pins drawn last, on top.
+        for (const p of reached) this.lit.set(p.id, 1);
+        for (const p of chosen) this.lit.set(p.id, 2);
+        if (reached.length) add(this.iconPointsOf(reached, NEAR_SCALE, 1, pass.theme));
+        if (chosen.length) add(this.iconPointsOf(chosen, OPEN_SCALE, 2, pass.theme));
+      } else if (pts.length) {
         add(new Points(pointsGeometry(pts), new PointsMaterial({ size: RING_PX, sizeAttenuation: false, map: this.textures.dot, color: css(pass.theme.pinRing).color, transparent: true, alphaTest: 0.05, depthTest: false })));
         add(new Points(pointsGeometry(pts, colors), new PointsMaterial({ size: PIN_PX, sizeAttenuation: false, map: this.textures.dot, vertexColors: true, transparent: true, alphaTest: 0.05, depthTest: false })));
       }
       this.focusShown = { pins: pts.length, lines: pass.hidden.has('line') ? 0 : segs.length / 6 };
     }
-    ring(pinsOf(pass.marked), pass.theme.accent, MARK_PX);
-    ring(pinsOf(pass.selection), pass.theme.accent, SELECT_PX);
     const hov = pass.hover && !pass.selection.has(pass.hover) ? [pass.hover] : [];
-    ring(pinsOf(hov), pass.theme.hover, SELECT_PX);
+    if (this.icons && this.shared) {
+      // The icon look: a selected Pin's light is its glow and its whitened rim; the mark and the hover
+      // ring the point as it is drawn now, clear of its edge.
+      this.ringsOf(pass.marked, scene, pass, pass.theme.accent, MARK_PX, 6, 2, add);
+      this.ringsOf(hov, scene, pass, pass.theme.hover, SELECT_PX, 3, 2.5, add);
+    } else {
+      ring(pinsOf(pass.marked), pass.theme.accent, MARK_PX);
+      ring(pinsOf(pass.selection), pass.theme.accent, SELECT_PX);
+      ring(pinsOf(hov), pass.theme.hover, SELECT_PX);
+    }
     const sel = lineSegs(pass.selection);
     if (sel.length) add(new LineSegments(segmentsGeometry(sel), new LineBasicMaterial({ color: css(pass.theme.accent).color, depthTest: false })));
     const hl = lineSegs(hov);
     if (hl.length) add(new LineSegments(segmentsGeometry(hl), new LineBasicMaterial({ color: css(pass.theme.hover).color, depthTest: false })));
+  }
+
+  // ---- the look: dots or icons
+
+  /**
+   * Dots (the fixed-size Pins) or icons: a point grows as it nears and turns into its type's icon at
+   * `from` CSS px. False where the browser cannot draw the icons (the view stays in dots). Drawn on
+   * the next render.
+   */
+  look(icons: boolean, from: number): boolean {
+    if (this.disposed) return false;
+    if (icons && !this.atlas) {
+      this.atlas = iconAtlas();
+      if (this.atlas) {
+        this.shared = sharedLook(this.atlas);
+        this.shared.uMaxSprite.value = this.maxSprite;
+      }
+    }
+    const on = icons && !!this.shared;
+    this.from = from;
+    if (this.shared) {
+      this.shared.uFrom.value = from;
+      this.shared.uRef.value = this.ref;
+      this.shared.uDpr.value = this.dpr;
+    }
+    if (on !== this.icons) {
+      this.icons = on;
+      this.clearBuilt();
+    }
+    this.projDirty = true;
+    return on === icons;
+  }
+
+  get iconsOn(): boolean {
+    return this.icons;
+  }
+
+  get iconFrom(): number {
+    return this.from;
+  }
+
+  /** A Pin's cell in the atlas, or -1 (no type, or none with an icon: it stays a dot). */
+  private iconOf(p: PinItem): number {
+    if (!p.elementType || !this.atlas) return -1;
+    return this.atlas.index.get(p.elementType.toLowerCase()) ?? -1;
+  }
+
+  /** A Pin as the icon look draws it now: its width, a body or a dot, the radius the press reads. */
+  drawnOf(p: PinItem): Drawn {
+    this.matrices();
+    const v = new Vector3(p.x, p.y, p.z).applyMatrix4(this.camera.matrixWorldInverse);
+    return drawn({ base: PIN_PX, lit: this.lit.get(p.id) ?? 0, ref: this.ref, depth: -v.z, dpr: this.dpr, maxSprite: this.maxSprite, from: this.from, hasIcon: this.iconOf(p) >= 0 });
+  }
+
+  /** The press's disc for a Pin in the icon look (pick3d's `disc`), or undefined in dots. */
+  get disc(): ((p: PinItem) => { r: number; layer: number }) | undefined {
+    if (!this.icons) return undefined;
+    return (p) => ({ r: this.drawnOf(p).r, layer: this.lit.get(p.id) ?? 0 });
+  }
+
+  /** Lit Pins of the icon look, drawn over the dimmed rest: reached (lit 1) or selected (lit 2). */
+  private iconPointsOf(pins: readonly PinItem[], scale: number, lit: 1 | 2, theme: Theme): Points {
+    const pos = new Float32Array(3 * pins.length);
+    const col = new Float32Array(4 * pins.length);
+    const icon = new Float32Array(pins.length);
+    pins.forEach((p, k) => {
+      const c = css(pinColor(p.style, theme)).color;
+      pos.set([p.x, p.y, p.z], 3 * k);
+      col.set([c.r, c.g, c.b, 1], 4 * k);
+      icon[k] = this.iconOf(p);
+    });
+    const g = new BufferGeometry();
+    g.setAttribute('position', new BufferAttribute(pos, 3));
+    g.setAttribute('aCol', new BufferAttribute(col, 4));
+    g.setAttribute('aIcon', new BufferAttribute(icon, 1));
+    return new Points(g, iconMaterial(this.shared!, PIN_PX, scale, lit, false));
+  }
+
+  /** A ring round each of these Pins as drawn now: `gap` CSS px clear of its edge, never smaller than `least`. */
+  private ringsOf(ids: Iterable<string>, scene: Scene, pass: Pass3D, color: string, least: number, gap: number, line: number, add: (o: Points) => void): void {
+    if (pass.hidden.has('pin')) return;
+    for (const id of ids) {
+      const it = scene.byId.get(id);
+      if (it?.kind !== 'pin') continue;
+      const size = Math.min(Math.max(least, 2 * (this.drawnOf(it).r + gap + line)), this.maxSprite / this.dpr);
+      add(new Points(pointsGeometry([[it.x, it.y, it.z]]), ringMaterial(css(color).color, size, line, this.dpr)));
+    }
+  }
+
+  /** How many shown Pins are drawn as their icon now (0 in dots), for a walk. */
+  iconCount(): number {
+    const s = this.scene;
+    if (!this.icons || !s) return 0;
+    let n = 0;
+    for (const it of s.items) if (it.kind === 'pin' && this.project(it.x, it.y, it.z) && this.drawnOf(it).icon) n++;
+    return n;
+  }
+
+  /** The renderer this view draws with, as the browser names it (a walk's bench says which machine it timed). */
+  gpu(): string {
+    const gl = this.renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  }
+
+  /**
+   * Draws the last pass's picture this many times and answers the milliseconds each took, each waited
+   * for: a one-pixel read waits for the frame to be drawn (`finish` alone did not, in Chromium).
+   */
+  bench(frames: number): number {
+    const gl = this.renderer.getContext();
+    const px = new Uint8Array(4);
+    this.renderer.render(this.three, this.camera);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    for (let k = 0; k < frames; k++) {
+      this.renderer.render(this.three, this.camera);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    }
+    return (performance.now() - t0) / Math.max(1, frames);
   }
 
   render(pass: Pass3D): void {
@@ -636,6 +825,7 @@ export class Surface3D implements Projector {
     this.marks = [];
     this.textures.dot.dispose();
     this.textures.ring.dispose();
+    this.atlas?.tex.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.canvas.remove();

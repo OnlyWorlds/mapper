@@ -15,6 +15,7 @@ import { pick } from '../core/hit';
 import { LAYOUT_METHOD } from '../core/links3d';
 import { pick3d } from '../core/hit3d';
 import { linesAlwaysOn, type MapReading } from '../core/kinds';
+import { storedLook, storeLook, type IconFrom, type Look } from '../core/look3d';
 import { placeLabels, type Placed } from '../core/labels';
 import { byName } from '../core/rows';
 import type { Scene } from '../core/scene';
@@ -209,6 +210,12 @@ export class MapView implements ModeHost {
   private destroyed = false;
   /** How many 3D surfaces this view made, for a walk to read (one context at a time). */
   surfacesMade = 0;
+  /** The 3D Pins' look, kept per browser: dots or icons, and where a dot turns into its icon. */
+  private look3d: Look = storedLook();
+  /** The switch for it, shown only while the 3D view is drawn. */
+  private lookRow: { row: HTMLElement; dots: HTMLButtonElement; icons: HTMLButtonElement; fromGroup: HTMLElement; from16: HTMLButtonElement; from20: HTMLButtonElement } | null = null;
+  /** The selection the 3D labels were last placed for in the icon look (a selected Pin grows, so its name moves out). */
+  private labelSel = '';
 
   constructor(
     private host: MapViewHost,
@@ -235,6 +242,7 @@ export class MapView implements ModeHost {
     this.viewBtn = reading.kind === 'layout3d' ? button('Flat', () => this.toggleView(), { class: 'view-toggle' }) : null;
     const extra = h('div', { class: 'extra' });
     const lines = h('div', { class: 'status', 'aria-live': 'polite' });
+    this.lookRow = reading.kind === 'layout3d' ? this.makeLookRow() : null;
     const head = h('div', { class: 'top' }, h('div', { class: 'bar' }, back, h('div', { class: 'titles' }, title, kind), h('div', { class: 'tools' }, this.viewBtn, listBtn, linesBtn)), extra, lines);
     const card = h('section', { class: 'card', 'aria-label': 'Selected' });
     const list = h('section', { class: 'maplist', 'aria-label': 'What this map places', hidden: true });
@@ -248,7 +256,9 @@ export class MapView implements ModeHost {
     const readout = host.measure ? h('div', { class: 'readout', 'aria-live': 'off' }) : null;
     // The 3D view's labels: text nodes over its canvas (the list view is what a screen reader reads).
     this.labelBox = h('div', { class: 'labels3d', 'aria-hidden': 'true', hidden: true });
-    this.root = h('div', { class: 'mapview' }, this.canvas, this.labelBox, head, zoom, panel, tip, lost, readout);
+    // The 3D look's switch sits in the lower left, never in the top block: the 3D fit keeps clear of
+    // that block, so a row there would move the picture in either look.
+    this.root = h('div', { class: 'mapview' }, this.canvas, this.labelBox, head, zoom, this.lookRow?.row ?? null, panel, tip, lost, readout);
     this.els = { title, head, extra, lines, linesBtn, listBtn, panel, card, list, tip, readout, lost };
     parent.append(this.root);
     this.listen();
@@ -305,6 +315,8 @@ export class MapView implements ModeHost {
     this.surfacesMade++;
     this.surface = surface;
     this.state3d = 'on';
+    // The kept look; where the icons cannot be drawn here, the dots (nothing kept changes).
+    if (!surface.look(this.look3d.icons, this.look3d.from)) this.look3d = { icons: false, from: this.look3d.from };
     this.moved3d = false;
     this.placed3d = false;
     this.centred3d = false;
@@ -334,6 +346,8 @@ export class MapView implements ModeHost {
   private stop3d(): void {
     this.ticket3d++;
     const hadFocus = !!this.surface && document.activeElement === this.surface.canvas;
+    // The look's switch leaves with the 3D view: a focused button in it hands the keyboard to the Flat or 3D button.
+    const hadLook = !!this.lookRow && this.lookRow.row.contains(document.activeElement);
     this.surface?.dispose();
     this.surface = null;
     this.down3d.clear();
@@ -342,6 +356,8 @@ export class MapView implements ModeHost {
     this.labelBox.hidden = true;
     clear(this.labelBox);
     if (hadFocus) this.canvas.focus({ preventScroll: true });
+    if (this.lookRow) this.lookRow.row.hidden = true;
+    if (hadLook) this.viewBtn?.focus({ preventScroll: true });
   }
 
   /** The ground's picture came without CORS: WebGL may not read it, so the plane stays blank and says so. */
@@ -389,11 +405,50 @@ export class MapView implements ModeHost {
   }
 
   private syncViewBtn(): void {
+    this.syncLook();
     const b = this.viewBtn;
     if (!b) return;
     const flatNext = this.state3d === 'on' || this.state3d === 'loading';
     b.textContent = flatNext ? 'Flat' : '3D';
     b.setAttribute('aria-label', flatNext ? 'Draw this map flat' : 'Draw this map in 3D');
+  }
+
+  // ---- the 3D Pins' look: dots or icons
+
+  /** The switch, made once: its buttons stay in place, so the keyboard's focus stays on the one pressed. */
+  private makeLookRow(): NonNullable<MapView['lookRow']> {
+    const dots = button('Dots', () => this.setLook(false, this.look3d.from), { class: 'seg', 'aria-pressed': 'true' });
+    const icons = button('Icons', () => this.setLook(true, this.look3d.from), { class: 'seg', 'aria-pressed': 'false' });
+    const from16 = button('16 px', () => this.setLook(true, 16), { class: 'seg', 'aria-pressed': 'false' });
+    const from20 = button('20 px', () => this.setLook(true, 20), { class: 'seg', 'aria-pressed': 'true' });
+    const fromGroup = h('div', { class: 'segs', role: 'group', 'aria-label': 'A dot turns into its icon from' }, h('span', { class: 'segs-name', 'aria-hidden': 'true' }, 'Icon from'), from16, from20);
+    const row = h('div', { class: 'look3d', hidden: true },
+      h('div', { class: 'segs', role: 'group', 'aria-label': 'Points' }, h('span', { class: 'segs-name', 'aria-hidden': 'true' }, 'Points'), dots, icons),
+      fromGroup);
+    return { row, dots, icons, fromGroup, from16, from20 };
+  }
+
+  /** A look chosen: drawn at once and kept for this browser; where the icons cannot be drawn, the dots stay, and so does what is kept. */
+  private setLook(icons: boolean, from: IconFrom): void {
+    const drawn = this.surface ? this.surface.look(icons, from) : true;
+    this.look3d = { icons: icons && drawn, from };
+    storeLook(this.look3d);
+    this.syncLook();
+    this.scheduleRest(0);
+    this.invalidate();
+  }
+
+  /** The switch shows the look, and shows at all only while the 3D view is drawn. */
+  private syncLook(): void {
+    const r = this.lookRow;
+    if (!r) return;
+    const L = this.look3d;
+    r.row.hidden = !this.is3d;
+    r.dots.setAttribute('aria-pressed', String(!L.icons));
+    r.icons.setAttribute('aria-pressed', String(L.icons));
+    r.fromGroup.hidden = !L.icons;
+    r.from16.setAttribute('aria-pressed', String(L.from === 16));
+    r.from20.setAttribute('aria-pressed', String(L.from === 20));
   }
 
   /**
@@ -679,7 +734,7 @@ export class MapView implements ModeHost {
   private pickAt(sx: number, sy: number, touch: boolean, many: boolean): string[] {
     const s = this.scene;
     if (s && this.surface && this.is3d) {
-      return pick3d(s.items, s.grid, this.surface, { sx, sy, r: touch ? 14 : 8, hidden: this.hidden, labels: this.labels, many, zoneZ: this.reading.groundZ });
+      return pick3d(s.items, s.grid, this.surface, { sx, sy, r: touch ? 14 : 8, hidden: this.hidden, labels: this.labels, many, zoneZ: this.reading.groundZ, disc: this.surface.disc });
     }
     if (!s || !this.camera) return [];
     const [x, y] = toMap(this.camera, this.view, sx, sy);
@@ -889,6 +944,12 @@ export class MapView implements ModeHost {
     if (this.surface && this.is3d) {
       const sf = this.surface;
       sf.render({ selection: this.selection, hover: this.hover, marked: this.marked, hidden: this.hidden, pictures: this.pictures, theme: this.theme });
+      // In the icon look a selected Pin and the Pins it reaches grow: their names are placed again, clear of them.
+      const sel = sf.iconsOn ? [...this.selection].sort().join(' ') : '';
+      if (sel !== this.labelSel) {
+        this.labelSel = sel;
+        this.scheduleRest(0);
+      }
       this.renderLabels3d();
       const moving = t - this.lastMove < 200 || this.down3d.size > 0;
       if (moving && this.lastFrameAt && t - this.lastFrameAt < 1000) this.stats.frames.push(t - this.lastFrameAt);
@@ -935,12 +996,15 @@ export class MapView implements ModeHost {
       const a = s.byId.get((it as LabelItem).anchor) as PinItem | undefined;
       if (!a) continue;
       let sx: number, sy: number;
+      let gap: number | undefined;
       if (sf) {
         const p = sf.project(a.x, a.y, a.z);
         if (!p) continue; // behind the camera: no label
         [sx, sy] = p;
+        // In the icon look a near point is wider than a dot: its name stands clear of it.
+        if (sf.iconsOn) gap = Math.max(8, sf.drawnOf(a).r + 4);
       } else [sx, sy] = toScreen(this.camera!, this.view, a.x, a.y);
-      cands.push({ anchor: a.id, text: (it as LabelItem).text, sx, sy });
+      cands.push({ anchor: a.id, text: (it as LabelItem).text, sx, sy, gap });
     }
     const max = Math.min(40, Math.max(8, Math.floor((this.view.w * this.view.h) / 24000)));
     this.labels = placeLabels(cands, (t) => this.renderer.measure(t, this.theme), { w: this.view.w, h: this.view.h, max, font: 12, gap: 8 });
@@ -1363,9 +1427,36 @@ export class MapView implements ModeHost {
   }
 
   /** The 3D camera's place and whether the ground's picture is on its plane (for a walk). */
-  walk3d(): { cam: number[] | null; picture: boolean; draws: number; stems: number; focus: { pins: number; lines: number } | null } {
+  walk3d(): { cam: number[] | null; picture: boolean; draws: number; stems: number; focus: { pins: number; lines: number } | null; look: 'dots' | 'icons' | null; from: number | null; icons: number } {
     const s = this.surface;
-    return { cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null, picture: !!s?.drewPicture, draws: s?.draws ?? 0, stems: s?.stemCount ?? 0, focus: s?.focusShown ? { ...s.focusShown } : null };
+    return {
+      cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null,
+      picture: !!s?.drewPicture,
+      draws: s?.draws ?? 0,
+      stems: s?.stemCount ?? 0,
+      focus: s?.focusShown ? { ...s.focusShown } : null,
+      look: s ? (s.iconsOn ? 'icons' : 'dots') : null,
+      from: s ? s.iconFrom : null,
+      icons: s?.iconCount() ?? 0,
+    };
+  }
+
+  /** A Pin as the 3D view draws it now, for a walk: where (client px), its width and drawn radius (CSS px), an icon or not. */
+  drawn3d(id: string): { x: number; y: number; px: number; r: number; icon: boolean } | null {
+    const it = this.scene?.byId.get(id);
+    const s = this.surface;
+    if (!s || !this.is3d || it?.kind !== 'pin') return null;
+    const at = this.pointOnScreen(it.x, it.y, it.z);
+    if (!at) return null;
+    if (!s.iconsOn) return { ...at, px: 9, r: 4.5, icon: false };
+    const d = s.drawnOf(it);
+    return { ...at, px: d.px, r: d.r, icon: d.icon };
+  }
+
+  /** The 3D view's frame time, the GPU waited for, and the renderer it timed (for a walk's bench). */
+  bench3d(frames: number): { ms: number; gpu: string } | null {
+    const s = this.surface;
+    return s && this.is3d ? { ms: s.bench(frames), gpu: s.gpu() } : null;
   }
 
   /** Where a Pin item stands on screen, in client pixels, in whichever view is drawn (for a walk). */

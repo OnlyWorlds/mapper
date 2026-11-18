@@ -136,6 +136,14 @@ label { font-weight: 600; font-size: 0.95rem; }
 .zoom button { min-width: 2.4rem; background: var(--overlay); }
 .panel { position: absolute; top: 8px; right: 8px; bottom: 8px; width: min(22rem, 40vw); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12); }
 .mapview.panel-open .zoom { right: calc(min(22rem, 40vw) + 16px); }
+/* The 3D Pins' look: Dots or Icons, and where a dot turns into its icon. */
+.look3d { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 5rem); display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; background: var(--overlay); border: 1px solid var(--border); border-radius: 8px; padding: 0.3rem 0.4rem; font-size: 0.85rem; }
+.look3d[hidden], .look3d .segs[hidden] { display: none; }
+.look3d .segs { display: flex; gap: 0.25rem; align-items: center; }
+.look3d .segs-name { color: var(--muted); padding: 0 0.15rem; }
+.look3d button { padding: 0.15rem 0.5rem; }
+.look3d button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.mapview.panel-open .look3d { max-width: calc(100% - min(22rem, 40vw) - 5rem); }
 /* A peek is one line: beside the map it is only as tall as that line. */
 .mapview.peeking .panel { bottom: auto; }
 /* The card never covers the bar's controls: beside an open card the top block keeps to the left. */
@@ -217,7 +225,8 @@ button.signin:hover { border-color: var(--text); }
   .element-head .maps-fold { display: inline-flex; align-items: center; }
   .element-head:not(.open) .chips, .element-head.single .chips { display: none; }
   .panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 55vh; border-radius: 12px 12px 0 0; padding: 0.5rem 16px calc(0.8rem + env(safe-area-inset-bottom)); }
-  .mapview.panel-open .zoom { display: none; }
+  .mapview.panel-open .zoom, .mapview.panel-open .look3d { display: none; }
+  .look3d { left: 6px; bottom: calc(12px + env(safe-area-inset-bottom)); font-size: 0.8rem; }
   .mapview.peeking .panel { bottom: 0; }
   .zoom { bottom: calc(12px + env(safe-area-inset-bottom)); }
   .readout { bottom: auto; top: auto; left: 6px; bottom: 6px; max-width: calc(100% - 70px); font-size: 11px; }
