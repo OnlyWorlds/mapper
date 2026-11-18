@@ -45,6 +45,12 @@ export interface Pick3DQuery {
   many: boolean;
   /** The height a Zone is drawn at. */
   zoneZ: number;
+  /**
+   * The icon look: each Pin's drawn radius in CSS pixels (0 for none) and its layer (a higher layer is
+   * drawn over a lower). A press on a drawn point picks the one drawn in front, as the eye sees it;
+   * elsewhere the nearest centre within `r`, as without. Absent, Pins pick by `r` alone.
+   */
+  disc?: (pin: PinItem) => { r: number; layer: number };
 }
 
 /** The distance on screen from the press to a run of segments, each cut at the near plane; Infinity when none is in front. */
@@ -64,12 +70,27 @@ function projectedDist(pr: Projector, pts: readonly [number, number, number][], 
 export function pick3d(items: readonly Item[], grid: Grid, pr: Projector, q: Pick3DQuery): string[] {
   if (!q.hidden.has('pin')) {
     const pins: [PinItem, number, number][] = [];
+    const held: [PinItem, number, number, number][] = [];
     for (const it of items) {
       if (it.kind !== 'pin') continue;
       const p = pr.project(it.x, it.y, it.z);
       if (!p) continue;
       const d = Math.hypot(p[0] - q.sx, p[1] - q.sy);
+      if (q.disc) {
+        const k = q.disc(it);
+        if (k.r > 0 && d <= k.r) {
+          held.push([it, d, p[2], k.layer]);
+          continue;
+        }
+      }
       if (d <= q.r) pins.push([it, d, p[2]]);
+    }
+    if (held.length) {
+      // Drawn in front first: the higher layer, then the nearer to the camera, then the nearer centre.
+      held.sort((a, b) => b[3] - a[3] || a[2] - b[2] || a[1] - b[1] || (a[0].id < b[0].id ? -1 : 1));
+      if (!q.many) return [held[0][0].id];
+      pins.sort((a, b) => a[1] - b[1] || a[2] - b[2] || (a[0].id < b[0].id ? -1 : 1));
+      return [...held.map(([p]) => p.id), ...pins.map(([p]) => p.id)];
     }
     if (pins.length) {
       pins.sort((a, b) => a[1] - b[1] || a[2] - b[2] || (a[0].id < b[0].id ? -1 : 1));

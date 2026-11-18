@@ -9,6 +9,8 @@ export interface LabelCandidate {
   /** The anchor's place on screen, CSS pixels. */
   sx: number;
   sy: number;
+  /** This anchor's own gap to its text, where it is drawn wider than the rest (a near icon in 3D). */
+  gap?: number;
 }
 
 export interface PlaceOptions {
@@ -38,8 +40,9 @@ export function placeLabels(cands: readonly LabelCandidate[], measure: (text: st
     if (out.length >= o.max) break;
     if (c.sx < 0 || c.sy < 0 || c.sx > o.w || c.sy > o.h) continue;
     const tw = measure(c.text) + 6;
-    const right: [number, number, number, number] = [c.sx + o.gap, c.sy - half, c.sx + o.gap + tw, c.sy + half];
-    const left: [number, number, number, number] = [c.sx - o.gap - tw, c.sy - half, c.sx - o.gap, c.sy + half];
+    const gap = c.gap ?? o.gap;
+    const right: [number, number, number, number] = [c.sx + gap, c.sy - half, c.sx + gap + tw, c.sy + half];
+    const left: [number, number, number, number] = [c.sx - gap - tw, c.sy - half, c.sx - gap, c.sy + half];
     for (const [rect, side] of [[right, 'right'], [left, 'left']] as const) {
       if (rect[0] < 0 || rect[2] > o.w || rect[1] < 0 || rect[3] > o.h) continue;
       if (out.some((p) => overlaps(p.rect, rect))) continue;
