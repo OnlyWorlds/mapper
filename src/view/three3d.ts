@@ -64,6 +64,8 @@ export interface Frame3D {
 
 const PIN_PX = 9;
 const RING_PX = 11.5;
+/** Up to this many link lines draw at the theme's full strength; past it each fades by the square root of the count. */
+const LINE_FADE_AT = 8;
 const SELECT_PX = 17;
 const MARK_PX = 23;
 const FOV = 45;
@@ -396,7 +398,12 @@ export class Surface3D implements Projector {
     for (const it of scene.items) if (it.kind === 'line') segs.push(it.ax, it.ay, it.az, it.bx, it.by, it.bz);
     if (segs.length) {
       const l = css(theme.line);
-      objects.push(Object.assign(new LineSegments(segmentsGeometry(segs), new LineBasicMaterial({ color: l.color, transparent: true, opacity: Math.max(0.25, l.alpha) })), { userData: { kind: 'line' } }));
+      // Many lines over one another add up to a white sheet (Sikelia's thousands): each line fades as
+      // their number grows, by the square root, never below a floor, so the points stay the picture.
+      // A line writes no depth, so it never hides a point behind it.
+      const n = segs.length / 6;
+      const opacity = Math.max(0.02, Math.min(l.alpha, l.alpha * LINE_FADE_AT / Math.sqrt(n)));
+      objects.push(Object.assign(new LineSegments(segmentsGeometry(segs), new LineBasicMaterial({ color: l.color, transparent: true, opacity, depthWrite: false })), { userData: { kind: 'line' } }));
     }
 
     // Stems from each Pin down (or up) to the ground's height, so a height reads.
