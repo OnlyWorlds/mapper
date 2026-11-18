@@ -3,7 +3,8 @@
 // the real server; pictures come from the recording too. At a desk and on a 390 px touch phone
 // (and the element view at 360 by 640 too). Its section `signin` is walk/signin.mjs: Sign in with
 // OnlyWorlds and the home of worlds, played on the registered origin; its section `links3d` is
-// walk/links3d.mjs: the world laid out by its links in 3D, on played worlds of its own.
+// walk/links3d.mjs: the world laid out by its links in 3D, on played worlds of its own; its section
+// `look3d` is walk/look3d.mjs: the 3D view's icon look, its drawn widths read from the pixels.
 //   npm run build && node walk/played.mjs [chromium|firefox]
 // Screenshots go to .scratch/shots/. Exits 1 on any failed check. MAPPER_DIST serves another build
 // (a control built from an older commit), MAPPER_PORT another port, SECTIONS=9,12 only those.
@@ -13,6 +14,7 @@ import { GROUP_COLORS } from '@onlyworlds/sdk';
 import { colourStats, decodePng } from './png.mjs';
 import { serve } from './serve.mjs';
 import { links3dWalk } from './links3d.mjs';
+import { look3dWalk } from './look3d.mjs';
 import { signinWalk } from './signin.mjs';
 import { keyOf, MOPPETOPIA as M, SIKELIA as S, M_MAP, M_SPACE, M_LAYOUT, S_BIG, S_LAYOUT, S_ELEMENT, M_ELEMENT, AT } from './worlds.mjs';
 
@@ -1187,6 +1189,9 @@ for (const [vp, opts] of [
 
   // links3d. The world laid out by its links in 3D, here and unsaved (walk/links3d.mjs).
   await section('links3d', () => links3dWalk({ browser, which, vp, opts, check, base: site.url }));
+
+  // look3d. The 3D view's icon look on a played layout of its own (walk/look3d.mjs).
+  await section('look3d', () => look3dWalk({ browser, which, vp, opts, check, base: site.url }));
 }
 
 clearTimeout(watchdog);
