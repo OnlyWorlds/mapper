@@ -93,7 +93,16 @@ for (const [vp, opts] of [
     }
     const sel = await page.evaluate(() => window.__mapper.selection);
     check(`${vp} ${name}: a press on a Pin in 3D selects it`, !!hit && sel.includes(hit.id), `${hit?.id} -> ${sel}`);
+    // The selected Pin is a focus: only its lines show, the Pins they reach in colour, the rest dimmed.
+    const focus = await page.evaluate(() => window.__mapper.view3d?.focus ?? null);
+    check(`${vp} ${name}: the selected Pin is a focus (its lines and the Pins they reach)`, !!focus && focus.pins >= 1 && focus.lines >= focus.pins - 1, JSON.stringify(focus));
     await page.screenshot({ path: `.scratch/live/live3d-${which}-${vp}-${name.replace(/\W+/g, '-')}.png` });
+    if (vp !== 'phone') {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+      const after = await page.evaluate(() => ({ sel: window.__mapper.selection, focus: window.__mapper.view3d?.focus ?? null }));
+      check(`${vp} ${name}: Escape gives the whole picture back`, after.sel.length === 0 && after.focus === null, JSON.stringify(after));
+    }
   }
   check(`${vp} no page errors`, errors.length === 0, errors.slice(0, 2).join(' | '));
   await ctx.close();

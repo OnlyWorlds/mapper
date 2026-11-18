@@ -10,6 +10,7 @@ import { fieldLabel } from '@onlyworlds/sdk';
 import { mountWaymark } from '@onlyworlds/sdk/waymark';
 import type { AddressWriter } from '../core/address';
 import { atOf, cameraFromAt, centreOn, fit, limitsFor, panBy, toMap, toScreen, zoomAt, type At, type Camera, type View } from '../core/camera';
+import { focusOf } from '../core/focus';
 import { pick } from '../core/hit';
 import { LAYOUT_METHOD } from '../core/links3d';
 import { pick3d } from '../core/hit3d';
@@ -511,9 +512,12 @@ export class MapView implements ModeHost {
     clear(box);
     const s = this.scene;
     if (!this.is3d || !s || this.hidden.has('label')) return;
+    // A selected Pin's focus: the names of the points it does not reach dim with their points.
+    const focus = this.hidden.has('pin') ? null : focusOf(s, this.selection);
     for (const l of this.labels) {
       const on = this.hover === l.anchor || this.selection.has(l.anchor);
-      const span = h('span', { class: `label3d ${l.side}${on ? ' on' : ''}` }, l.text);
+      const dim = !!focus && !on && !focus.near.has(l.anchor);
+      const span = h('span', { class: `label3d ${l.side}${on ? ' on' : ''}${dim ? ' dim' : ''}` }, l.text);
       span.style.left = `${l.rect[0] + 3}px`;
       span.style.top = `${(l.rect[1] + l.rect[3]) / 2}px`;
       box.append(span);
@@ -1359,9 +1363,9 @@ export class MapView implements ModeHost {
   }
 
   /** The 3D camera's place and whether the ground's picture is on its plane (for a walk). */
-  walk3d(): { cam: number[] | null; picture: boolean; draws: number; stems: number } {
+  walk3d(): { cam: number[] | null; picture: boolean; draws: number; stems: number; focus: { pins: number; lines: number } | null } {
     const s = this.surface;
-    return { cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null, picture: !!s?.drewPicture, draws: s?.draws ?? 0, stems: s?.stemCount ?? 0 };
+    return { cam: s ? s.camera.position.toArray().map((v) => Math.round(v)) : null, picture: !!s?.drewPicture, draws: s?.draws ?? 0, stems: s?.stemCount ?? 0, focus: s?.focusShown ? { ...s.focusShown } : null };
   }
 
   /** Where a Pin item stands on screen, in client pixels, in whichever view is drawn (for a walk). */

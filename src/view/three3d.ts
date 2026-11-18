@@ -35,6 +35,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GROUP_COLORS, type ElementGroup } from '@onlyworlds/sdk';
 import type { View } from '../core/camera';
+import { focusOf } from '../core/focus';
 import { clipToNear, type Projector } from '../core/hit3d';
 import type { Scene } from '../core/scene';
 import type { ItemKind, LineItem, PinItem, ZoneItem } from '../core/types';
@@ -67,6 +68,8 @@ const RING_PX = 11.5;
 /** Up to this many link lines draw at the theme's full strength; past it each fades by the square root of the count. */
 const LINE_FADE_AT = 8;
 const SELECT_PX = 17;
+/** While a Pin is selected, the points it does not link to draw at this strength (its lines alone show). */
+const FOCUS_DIM = 0.16;
 const MARK_PX = 23;
 const FOV = 45;
 
@@ -149,6 +152,8 @@ export class Surface3D implements Projector {
   private built: { scene: Scene; theme: Theme; objects: (Mesh | LineSegments | Points)[] } | null = null;
   /** The view pass's marks, made again on every render (a handful of points and segments). */
   private marks: (LineSegments | Points)[] = [];
+  /** How the last pass drew, for the walks: the Pins in focus and the lines shown with them, or null. */
+  focusShown: { pins: number; lines: number } | null = null;
   private ground: { mesh: Mesh; url: string | null; bitmap: ImageBitmap | null; texture: Texture | null } | null = null;
   private maxTexture: number;
   private lostHandler: (e: Event) => void;
@@ -549,6 +554,38 @@ export class Surface3D implements Projector {
       }
       return segs;
     };
+    // A selected Pin is a focus: only its own lines show, in the accent, and the Pins they reach keep
+    // their colour while every other point dims. Empty space, or the Pin pressed again, gives the
+    // whole picture back (the selection empties).
+    const focus = pass.hidden.has('pin') ? null : focusOf(scene, pass.selection);
+    const on = focus !== null;
+    for (const o of this.built?.objects ?? []) {
+      const kind = o.userData.kind;
+      if (kind !== 'pin' && kind !== 'line') continue;
+      const m = o.material as PointsMaterial | LineBasicMaterial;
+      if (m.userData.full === undefined) m.userData.full = m.opacity;
+      // The whole picture's lines hide in a focus; its Pins and stems dim.
+      if (kind === 'line') o.visible = o.visible && !on;
+      else m.opacity = on ? m.userData.full * FOCUS_DIM : m.userData.full;
+    }
+    this.focusShown = null;
+    if (focus) {
+      const { segs, near } = focus;
+      if (segs.length && !pass.hidden.has('line')) add(new LineSegments(segmentsGeometry(segs), new LineBasicMaterial({ color: css(pass.theme.accent).color, transparent: true, opacity: 0.85, depthTest: false })));
+      const pts: [number, number, number][] = [];
+      const colors: Color[] = [];
+      for (const id of near) {
+        const it = scene.byId.get(id);
+        if (it?.kind !== 'pin') continue;
+        pts.push([it.x, it.y, it.z]);
+        colors.push(css(pinColor((it as PinItem).style, pass.theme)).color);
+      }
+      if (pts.length) {
+        add(new Points(pointsGeometry(pts), new PointsMaterial({ size: RING_PX, sizeAttenuation: false, map: this.textures.dot, color: css(pass.theme.pinRing).color, transparent: true, alphaTest: 0.05, depthTest: false })));
+        add(new Points(pointsGeometry(pts, colors), new PointsMaterial({ size: PIN_PX, sizeAttenuation: false, map: this.textures.dot, vertexColors: true, transparent: true, alphaTest: 0.05, depthTest: false })));
+      }
+      this.focusShown = { pins: pts.length, lines: pass.hidden.has('line') ? 0 : segs.length / 6 };
+    }
     ring(pinsOf(pass.marked), pass.theme.accent, MARK_PX);
     ring(pinsOf(pass.selection), pass.theme.accent, SELECT_PX);
     const hov = pass.hover && !pass.selection.has(pass.hover) ? [pass.hover] : [];
