@@ -84,7 +84,7 @@ describe('fewer points than nodes', () => {
   const typeOf = new Map(more.map((x) => [x.id, x.type as string]));
   const drawn = () => {
     const a = layOut(input({ rows: more }));
-    const floor = floorBesideGroups({ ids: a.ids, points: roundPoints(a.points), group: a.group, unplaced: a.unplaced, typeOf: (x) => typeOf.get(x) ?? null });
+    const floor = floorBesideGroups({ ids: a.ids, points: a.points, rounded: roundPoints(a.points), group: a.group, unplaced: a.unplaced, typeOf: (x) => typeOf.get(x) ?? null });
     const made = madeUp(floor.ids, floor.points, (x) => typeOf.get(x) ?? null);
     const maps = [...space.filter((x) => x.type === 'map'), made.map];
     const reading = { ...readMap(made.map, maps), words: KIND_WORDS };

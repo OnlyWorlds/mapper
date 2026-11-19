@@ -1096,7 +1096,7 @@ export class App {
     };
     // What the method does not place stands on the floor beside the groups (the mapper's drawing,
     // made from the answer alone; the hold keeps only the method's points).
-    const floor = floorBesideGroups({ ids, points: rounded, group: answer.group, unplaced: answer.unplaced, typeOf });
+    const floor = floorBesideGroups({ ids, points: answer.points, rounded, group: answer.group, unplaced: answer.unplaced, typeOf });
     this.floor3d = { moved: floor.moved, gathered: floor.gathered, gatheredKinds: floor.gatheredKinds, ids: floor.ids.slice(ids.length), xyz: [...floor.points.subarray(3 * ids.length)] };
     const made = madeUp(floor.ids, floor.points, typeOf);
     const maps = [...ws.store.ofType('map'), made.map];

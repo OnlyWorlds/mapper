@@ -1,164 +1,238 @@
 // The floor beside the groups (OW Mapping's pick 2): what `layoutByLinks3d` does not place (its
-// `unplaced`: linked to no other element and on no plate) is drawn by the mapper beside the group
-// where most elements of its kind stand, each kind's elements packed as a ball on the far side of
-// that group from the body. A kind no placed element holds gathers in a ball of its own just below
-// the picture. The method's points are never changed: the floor is made after the layout from its
-// answer alone, so the same answer draws the same floor, and the hold keeps only what the method
-// placed. Pure.
-import { BY_LINKS_3D_REST } from '@onlyworlds/sdk';
+// `unplaced`: linked to no other element and on no plate) the mapper stands beside the group where
+// most elements of its kind stand, packed as a ball on that group's far side from the body; a kind no
+// group holds is gathered as a ball of its own in a row under everything placed (a world with no link
+// at all is only that row). Every floor point then stands clear (`clearOf`): at least `FLOOR_GAP`,
+// the method's own least spacing, from every point the method placed and every floor point before
+// it. The method's points are never moved, and the hold keeps only them. The same world gives the
+// same floor whatever order its elements are handed in: every choice is by id or kind, in code point
+// order, and every sum is taken in id order. The rule and its numbers are the OnlyWorlds dashboard's
+// own (its 3D floor), so one world stands the same floor in both tools. Pure.
+import { BY_LINKS_3D_REST, roundHalfEven } from '@onlyworlds/sdk';
 
-/** What the floor reads from the layout's answer. */
 export interface FloorInput {
-  /** The placed elements, in the answer's order. */
+  /** The placed elements' ids, in the answer's order. */
   ids: readonly string[];
-  /** x, y, z of `ids[i]` at `3 * i` (rounded). */
+  /** x, y, z of `ids[k]` at `3 * k`, as the method answered them. */
   points: ArrayLike<number>;
-  /** The method's `group` for `ids[i]`: the centre it stands with, or null. */
+  /** The method's `group` for `ids[k]`: a centre's id, or null. */
   group: readonly (string | null)[];
-  /** The elements the method does not place, by id. */
+  /** The ids the method left out. */
   unplaced: readonly string[];
-  /** The element's type, or null when unknown. */
+  /** An element's kind (its type), or null when unknown. */
   typeOf: (id: string) => string | null;
 }
 
-export interface FloorDrawn {
-  /** Every element drawn: the placed, then the floor's. */
-  ids: string[];
-  /** x, y, z of `ids[i]` at `3 * i`: the placed as answered, the floor's whole numbers after them. */
-  points: Float64Array;
-  /** Floor elements put beside a group of their kind. */
+export type Vec3 = [number, number, number];
+const REST = BY_LINKS_3D_REST;
+/** No floor point stands nearer than this to a placed point or another floor point: half a rest, the method's least spacing. */
+export const FLOOR_GAP = REST / 2;
+/** Each floor element's room in a ball: a cube two rests on a side, so the ball's own points mostly stand a gap apart. */
+const ROOM = (2 * REST) ** 3;
+/** The step a point is moved by while it is not clear. */
+const STEP = REST / 4;
+const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const scale = (a: Vec3, s: number): Vec3 => [a[0] * s, a[1] * s, a[2] * s];
+const len = (a: Vec3): number => Math.hypot(a[0], a[1], a[2]);
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** The golden angle: each next element of a ball turned from the last. */
+const TURN = Math.PI * (3 - Math.sqrt(5));
+const PHI = 0.6180339887498949;
+/** The radius of a ball that holds `n` elements, `ROOM` each. */
+const ballOf = (n: number): number => Math.cbrt((3 * n * ROOM) / (4 * Math.PI));
+/** The radius of the ball `n` elements are packed in: where its last one stands. */
+const outer = (n: number): number => (n <= 1 ? 0 : ballOf(n - 1) + REST / 2);
+
+/**
+ * The clearance: `p` moved along the unit direction `dir`, `step` at a time, to the first place at
+ * least `gap` from each of the first `count` points of `taken` (x, y, z at `3 * k`); `p` itself when
+ * it is clear already. Pure.
+ */
+export function clearOf(p: Vec3, dir: Vec3, taken: ArrayLike<number>, count: number, gap: number, step: number): Vec3 {
+  const g2 = gap * gap;
+  let q: Vec3 = [p[0], p[1], p[2]];
+  for (let tries = 0; tries < 100000; tries++) {
+    let clear = true;
+    for (let k = 0; k < count; k++) {
+      const dx = q[0] - taken[3 * k];
+      const dy = q[1] - taken[3 * k + 1];
+      const dz = q[2] - taken[3 * k + 2];
+      if (dx * dx + dy * dy + dz * dz < g2) {
+        clear = false;
+        break;
+      }
+    }
+    if (clear) return q;
+    q = add(q, scale(dir, step));
+  }
+  return q;
+}
+
+export interface Floor {
+  /** x, y, z of `unplaced[k]` at `3 * k`, in the method's units (not rounded). */
+  floor: Float64Array;
+  /** Floor elements stood beside a group of their kind. */
   moved: number;
-  /** Floor elements of a kind no group holds, gathered below the picture by kind. */
+  /** Floor elements of a kind no group holds, gathered in the row by kind. */
   gathered: number;
-  /** The kinds gathered so (each once). */
+  /** The kinds gathered so (each once, an unknown kind left out). */
   gatheredKinds: string[];
 }
 
-type V = [number, number, number];
-const sub = (a: V, b: V): V => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const len = (a: V): number => Math.hypot(a[0], a[1], a[2]);
-const scale = (a: V, s: number): V => [a[0] * s, a[1] * s, a[2] * s];
-const add = (a: V, b: V): V => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const norm = (a: V): V | null => {
-  const l = len(a);
-  return l > 1e-9 ? scale(a, 1 / l) : null;
-};
-
-/** The golden angle: each next element turned from the last. */
-const TURN = Math.PI * (3 - Math.sqrt(5));
-/** The room one floor element takes: a cube a rest across. */
-const ROOM = BY_LINKS_3D_REST ** 3;
-/** The radius of a ball that holds `n` elements' room. */
-const ballOf = (n: number): number => Math.cbrt((3 * n * ROOM) / (4 * Math.PI));
-
-function centreOf(idx: readonly number[], p: ArrayLike<number>): { c: V; r: number } {
-  let c: V = [0, 0, 0];
-  for (const i of idx) c = add(c, [p[3 * i], p[3 * i + 1], p[3 * i + 2]]);
-  c = scale(c, 1 / idx.length);
-  let r = 0;
-  for (const i of idx) r = Math.max(r, len(sub([p[3 * i], p[3 * i + 1], p[3 * i + 2]], c)));
-  return { c, r };
-}
-
-/** Code point order, so the same ids pack the same in every runtime. */
-const byId = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-
-export function floorBesideGroups(input: FloorInput): FloorDrawn {
-  const { ids, points, group, unplaced, typeOf } = input;
-  const n = ids.length;
-  const placed = new Set(ids);
-  const floorIds = [...new Set(unplaced)].filter((id) => !placed.has(id)).sort(byId);
-  const out = new Float64Array(3 * (n + floorIds.length));
-  out.set(Array.from(points).slice(0, 3 * n));
-
-  // The groups: their members, and where each placed element stands (its group, or for an arm, a
-  // link or a pinned element, which the method names no group, the group whose centre is nearest).
-  const members = new Map<string, number[]>();
-  for (let i = 0; i < n; i++) {
-    const g = group[i];
-    if (g !== null && g !== undefined) (members.get(g) ?? members.set(g, []).get(g)!).push(i);
-  }
-  const centres = [...members].map(([g, idx]) => ({ g, ...centreOf(idx, points) }));
-  const standsIn = (i: number): string | null => {
-    const g = group[i];
-    if (g !== null && g !== undefined) return g;
-    if (!centres.length) return null;
-    const p: V = [points[3 * i], points[3 * i + 1], points[3 * i + 2]];
-    let best = centres[0];
-    for (const c of centres) if (len(sub(p, c.c)) < len(sub(p, best.c))) best = c;
-    return best.g;
+export function floorOf(input: FloorInput): Floor {
+  const { ids, points, group, unplaced } = input;
+  const typeOf = (id: string): string => input.typeOf(id) ?? '';
+  const out = new Float64Array(3 * unplaced.length);
+  if (!unplaced.length) return { floor: out, moved: 0, gathered: 0, gatheredKinds: [] };
+  const at = (k: number): Vec3 => [points[3 * k], points[3 * k + 1], points[3 * k + 2]];
+  const centreOf = (idx: readonly number[]): { c: Vec3; r: number } => {
+    let c: Vec3 = [0, 0, 0];
+    for (const k of idx) c = add(c, at(k));
+    c = scale(c, 1 / idx.length);
+    let r = 0;
+    for (const k of idx) r = Math.max(r, len(sub(at(k), c)));
+    return { c, r };
   };
-  // Per kind, the group that holds most of it (a tie to the smaller id).
+
+  // The groups, by centre id; every sum taken in id order, so the order handed in moves no point.
+  const byId = ids.map((_, k) => k).sort((a, b) => cmp(ids[a], ids[b]));
+  const members = new Map<string, number[]>();
+  for (const k of byId) {
+    const g = group[k];
+    if (g !== null && g !== undefined) (members.get(g) ?? members.set(g, []).get(g)!).push(k);
+  }
+  const groups = [...members.keys()].sort(cmp).map((g) => ({ g, ...centreOf(members.get(g)!) }));
+  const body = byId.length ? centreOf(byId) : { c: [0, 0, 0] as Vec3, r: 0 };
+
+  // Where each placed element stands: its group, or (an arm, a link: the method names none) the nearest centre.
+  const standsIn = (k: number): string | null => {
+    const g = group[k];
+    if (g !== null && g !== undefined) return g;
+    let best: { g: string; d: number } | null = null;
+    for (const x of groups) {
+      const d = len(sub(at(k), x.c));
+      if (!best || d < best.d) best = { g: x.g, d };
+    }
+    return best ? best.g : null;
+  };
+  // Per kind, the group that holds most of it (a tie to the smaller centre id).
   const perKind = new Map<string, Map<string, number>>();
-  for (let i = 0; i < n; i++) {
-    const k = typeOf(ids[i]);
-    const g = k === null ? null : standsIn(i);
-    if (k === null || g === null) continue;
-    const m = perKind.get(k) ?? perKind.set(k, new Map()).get(k)!;
+  for (const k of byId) {
+    const g = standsIn(k);
+    if (g === null) continue;
+    const kind = typeOf(ids[k]);
+    const m = perKind.get(kind) ?? perKind.set(kind, new Map()).get(kind)!;
     m.set(g, (m.get(g) ?? 0) + 1);
   }
-  const homeOf = (k: string | null): string | null => {
-    const m = k === null ? undefined : perKind.get(k);
+  const homeOf = (kind: string): string | null => {
+    const m = perKind.get(kind);
     if (!m) return null;
     let best: string | null = null;
     for (const [g, c] of m) if (best === null || c > m.get(best)! || (c === m.get(best)! && g < best)) best = g;
     return best;
   };
 
-  const byHome = new Map<string, number[]>();
-  const homeless = new Map<string, number[]>();
-  floorIds.forEach((id, j) => {
-    const k = typeOf(id);
-    const home = homeOf(k);
-    const at = n + j;
-    if (home === null) (homeless.get(k ?? '') ?? homeless.set(k ?? '', []).get(k ?? '')!).push(at);
-    else (byHome.get(home) ?? byHome.set(home, []).get(home)!).push(at);
+  // The floor's elements by id, each beside its kind's home group, or gathered with its kind.
+  const slot = new Map<string, number>();
+  unplaced.forEach((id, k) => {
+    if (!slot.has(id)) slot.set(id, k);
   });
+  const order = [...slot.keys()].sort(cmp);
+  const byHome = new Map<string, string[]>();
+  const homeless = new Map<string, string[]>();
+  for (const id of order) {
+    const kind = typeOf(id);
+    const home = homeOf(kind);
+    if (home === null) (homeless.get(kind) ?? homeless.set(kind, []).get(kind)!).push(id);
+    else (byHome.get(home) ?? byHome.set(home, []).get(home)!).push(id);
+  }
 
-  // A ball of elements round `ball`: the first at its middle, each next at the radius that holds the
-  // room of those before it, its direction the next of a golden sequence over the sphere.
-  const pack = (list: number[], ball: V): void => {
-    list.forEach((at, k) => {
-      const r = k === 0 ? 0 : ballOf(k) + BY_LINKS_3D_REST / 2;
+  // Everything placed so far, the method's points first in id order: each floor point stands clear of all of it.
+  const taken = new Float64Array(3 * (ids.length + slot.size));
+  let count = 0;
+  for (const k of byId) {
+    taken[3 * count] = points[3 * k];
+    taken[3 * count + 1] = points[3 * k + 1];
+    taken[3 * count + 2] = points[3 * k + 2];
+    count++;
+  }
+  // A ball: the first at its middle, each next at the radius that holds those before it, on a golden
+  // sequence; each point then moved along `away` until it is clear.
+  const ball = (list: readonly string[], centre: Vec3, away: Vec3): void => {
+    list.forEach((id, k) => {
+      const r = k === 0 ? 0 : ballOf(k) + REST / 2;
       const a = k * TURN;
-      const cz = 1 - 2 * ((k * 0.6180339887498949) % 1);
+      const cz = 1 - 2 * ((k * PHI) % 1);
       const s = Math.sqrt(Math.max(0, 1 - cz * cz));
-      const p = add(ball, scale([s * Math.cos(a), s * Math.sin(a), cz], r));
-      for (let d = 0; d < 3; d++) out[3 * at + d] = Math.round(p[d]) + 0;
+      const p = clearOf(add(centre, scale([s * Math.cos(a), s * Math.sin(a), cz], r)), away, taken, count, FLOOR_GAP, STEP);
+      const j = slot.get(id)!;
+      out[3 * j] = p[0];
+      out[3 * j + 1] = p[1];
+      out[3 * j + 2] = p[2];
+      taken[3 * count] = p[0];
+      taken[3 * count + 1] = p[1];
+      taken[3 * count + 2] = p[2];
+      count++;
     });
   };
-  const outer = (count: number): number => (count <= 1 ? 0 : ballOf(count - 1) + BY_LINKS_3D_REST / 2);
-
-  // The body's centre: each group's ball goes on its far side from it.
-  const all = Array.from({ length: n }, (_, i) => i);
-  const body: V = n ? centreOf(all, points).c : [0, 0, 0];
   let moved = 0;
-  for (const home of [...byHome.keys()].sort(byId)) {
-    const list = byHome.get(home)!;
-    const g = centres.find((c) => c.g === home)!;
-    const dir = norm(sub(g.c, body)) ?? [1, 0, 0];
-    pack(list, add(g.c, scale(dir, g.r + BY_LINKS_3D_REST + outer(list.length))));
+  for (const x of groups) {
+    const list = byHome.get(x.g);
+    if (!list) continue;
+    const d = sub(x.c, body.c);
+    const l = len(d);
+    const dir: Vec3 = l > 1e-9 ? scale(d, 1 / l) : [1, 0, 0];
+    ball(list, add(x.c, scale(dir, x.r + REST + outer(list.length))), dir);
     moved += list.length;
   }
-
-  // A kind no placed element holds: a ball of its own, the balls side by side just below the picture.
-  const gatheredKinds = [...homeless.keys()].sort(byId);
-  let zMin = 0;
-  if (n) {
-    zMin = Infinity;
-    for (let i = 0; i < n; i++) zMin = Math.min(zMin, points[3 * i + 2]);
-  }
-  const radii = gatheredKinds.map((k) => outer(homeless.get(k)!.length));
-  const width = radii.reduce((s, r) => s + 2 * r, 0) + BY_LINKS_3D_REST * Math.max(0, radii.length - 1);
-  let x = body[0] - width / 2;
+  // Kinds no group holds: a row of balls under everything placed (the method's points and the home
+  // balls), by kind, centred under the body; a point not clear moves down.
+  const kinds = [...homeless.keys()].sort(cmp);
   let gathered = 0;
-  gatheredKinds.forEach((k, j) => {
-    const r = radii[j];
-    const list = homeless.get(k)!;
-    pack(list, [x + r, body[1], (n ? zMin - BY_LINKS_3D_REST : 0) - r]);
-    x += 2 * r + BY_LINKS_3D_REST;
-    gathered += list.length;
-  });
+  if (kinds.length) {
+    const radii = kinds.map((k) => outer(homeless.get(k)!.length));
+    const xs: number[] = [];
+    let x = 0;
+    radii.forEach((r, j) => {
+      if (j) x += radii[j - 1] + REST + r;
+      xs.push(x);
+    });
+    const mid = xs[xs.length - 1] / 2;
+    const top = Math.max(...radii);
+    let low = Infinity;
+    for (let k = 0; k < count; k++) low = Math.min(low, taken[3 * k + 2]);
+    const z = count ? low - REST - top : 0;
+    kinds.forEach((k, j) => {
+      ball(homeless.get(k)!, [body.c[0] + xs[j] - mid, body.c[1], z], [0, 0, -1]);
+      gathered += homeless.get(k)!.length;
+    });
+  }
+  return { floor: out, moved, gathered, gatheredKinds: kinds.filter((k) => k !== '') };
+}
 
-  return { ids: [...ids, ...floorIds], points: out, moved, gathered, gatheredKinds: gatheredKinds.filter((k) => k !== '') };
+export interface FloorDrawn {
+  /** Every element drawn: the placed, then the floor's (by id, each once). */
+  ids: string[];
+  /** x, y, z of `ids[i]` at `3 * i`, in whole units: the placed as the hold keeps them, the floor's rounded the same way. */
+  points: Float64Array;
+  moved: number;
+  gathered: number;
+  gatheredKinds: string[];
+}
+
+/**
+ * The picture as the mapper draws it: the method's points rounded as the hold keeps them, then the
+ * floor (`floorOf` over the method's own points, so it agrees with the dashboard's), rounded the
+ * same way (half to even, as the SDK rounds). `rounded` is `points` rounded.
+ */
+export function floorBesideGroups(input: FloorInput & { rounded: ArrayLike<number> }): FloorDrawn {
+  const placed = new Set(input.ids);
+  const unplaced = [...new Set(input.unplaced)].filter((id) => !placed.has(id)).sort(cmp);
+  const f = floorOf({ ...input, unplaced });
+  const n = input.ids.length;
+  const points = new Float64Array(3 * (n + unplaced.length));
+  points.set(Array.from(input.rounded).slice(0, 3 * n));
+  for (let i = 0; i < f.floor.length; i++) points[3 * n + i] = roundHalfEven(f.floor[i]) + 0;
+  return { ids: [...input.ids, ...unplaced], points, moved: f.moved, gathered: f.gathered, gatheredKinds: f.gatheredKinds };
 }
