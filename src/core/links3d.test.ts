@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BY_LINKS_3D_REST, layoutByLinks3d, layoutOf, mapSpace, worldGraph } from '@onlyworlds/sdk';
+import { floorBesideGroups } from './floor';
 import { focusOf } from './focus';
 import { Grid } from './hit';
 import { pick3d, type Projector } from './hit3d';
@@ -7,8 +8,8 @@ import { flatHold } from './hold';
 import { readMap } from './kinds';
 import { layOut, type Links3dInput } from './layout3d';
 import {
-  ceilingWords3d, CHANGE_LINE, EMPTY_LINE, emptyWords3d, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP, madeUp, newCount,
-  NO_PLATE_LINE, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_WORDS, OLD_LINE, pictureFrom, readAtWords, readingWords, roundPoints, spaceOf, STOPPED_LINE, UNSAVED_LINE, unplacedWords3d,
+  ceilingWords3d, CHANGE_LINE, EMPTY_LINE, FAILED_LINE, floorWords3d, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP, madeUp, newCount,
+  NO_PLATE_LINE, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_WORDS, OLD_LINE, pictureFrom, readAtWords, readingWords, roundPoints, spaceOf, STOPPED_LINE, UNSAVED_LINE,
 } from './links3d';
 import { holdRefusal } from './refusal';
 import { build, GraphCache } from './scene';
@@ -77,20 +78,22 @@ describe('the answer as a Map and Pins', () => {
 
 describe('fewer points than nodes', () => {
   // The ring and spoke, a pair linked only to each other (a piece of its own, on the ring round the
-  // main shape), and two elements linked to nothing and on no plate (not placed).
+  // main shape), and two elements linked to nothing and on no plate (not placed by the method: the
+  // mapper stands them on its floor). The drawing as the page makes it: the floor, then the Pins.
   const more: Row[] = [...rows, ch(20, [21]), ch(21), ch(30), ch(31)];
   const typeOf = new Map(more.map((x) => [x.id, x.type as string]));
   const drawn = () => {
     const a = layOut(input({ rows: more }));
-    const made = madeUp(a.ids, roundPoints(a.points), (x) => typeOf.get(x) ?? null);
+    const floor = floorBesideGroups({ ids: a.ids, points: roundPoints(a.points), group: a.group, unplaced: a.unplaced, typeOf: (x) => typeOf.get(x) ?? null });
+    const made = madeUp(floor.ids, floor.points, (x) => typeOf.get(x) ?? null);
     const maps = [...space.filter((x) => x.type === 'map'), made.map];
     const reading = { ...readMap(made.map, maps), words: KIND_WORDS };
-    const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: more, pinned: [...a.ids] };
-    return { a, made, scene: build({ slice, reading, ground: null, rung: 'public', complete: true, pictureSize: null, versionOf: () => 1 }, new GraphCache()) };
+    const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: more, pinned: [...floor.ids] };
+    return { a, floor, made, scene: build({ slice, reading, ground: null, rung: 'public', complete: true, pictureSize: null, versionOf: () => 1 }, new GraphCache()) };
   };
 
-  it('lists what it does not place and gives a point only to what it places, paired by id', () => {
-    const { a, made } = drawn();
+  it('the method lists what it does not place and gives a point only to what it places, paired by id', () => {
+    const { a, floor, made } = drawn();
     expect(a.unplaced).toEqual([id(130), id(131)]);
     expect(a.ids).toHaveLength(10);
     expect(a.ids).toEqual(expect.arrayContaining([id(120), id(121)]));
@@ -98,21 +101,22 @@ describe('fewer points than nodes', () => {
     expect(a.points).toHaveLength(30);
     expect(a.how).toHaveLength(10);
     expect(a.how).not.toContain('shelf');
-    // Each Pin stands for its own id's point, never another index's.
-    const r = roundPoints(a.points);
-    const min = [0, 1, 2].map((k) => Math.min(...a.ids.map((_, i) => r[3 * i + k])));
+    // Each Pin stands for its own id's point, never another index's: the method's for the placed,
+    // the floor's for the two after them.
+    expect(floor.ids).toEqual([...a.ids, id(130), id(131)]);
+    const min = [0, 1, 2].map((k) => Math.min(...floor.ids.map((_, i) => floor.points[3 * i + k])));
     for (const p of made.pins) {
-      const i = a.ids.indexOf(p.element_id as string);
-      expect([p.x, p.y, p.z]).toEqual([0, 1, 2].map((k) => r[3 * i + k] - min[k] + 0));
+      const i = floor.ids.indexOf(p.element_id as string);
+      expect([p.x, p.y, p.z]).toEqual([0, 1, 2].map((k) => floor.points[3 * i + k] - min[k] + 0));
     }
-    expect(made.pins.map((p) => p.element_id)).not.toContain(id(130));
+    expect([...floor.points.subarray(0, 30)]).toEqual([...roundPoints(a.points)]);
   });
 
-  it('the scene draws a Pin for each placed element and none for the unplaced; the focus and the press find them by id', () => {
+  it('the scene draws a Pin for each placed element and each on the floor; the focus and the press find them by id', () => {
     const { a, scene } = drawn();
-    expect(scene.counts.pins).toBe(10);
+    expect(scene.counts.pins).toBe(12);
     const pins = scene.items.filter((it) => it.kind === 'pin');
-    expect(pins.map((p) => p.element).sort()).toEqual([...a.ids].sort());
+    expect(pins.map((p) => p.element).sort()).toEqual([...a.ids, ...a.unplaced].sort());
     expect(scene.counts.lines).toBe(10);
     // The pair's own line, and the focus a press on one of them makes.
     const p20 = pins.find((p) => p.element === id(120))!;
@@ -124,6 +128,10 @@ describe('fewer points than nodes', () => {
     const grid = new Grid(scene.items, scene.frame.w, scene.frame.h);
     const at = p20 as unknown as { x: number; y: number };
     expect(pick3d(scene.items, grid, flat, { sx: at.x, sy: at.y, r: 0.5, hidden: new Set(['line']), labels: [], many: false, zoneZ: 0 })).toEqual([p20.id]);
+    // An element on the floor is pressed the same way, and its focus is itself: it has no line.
+    const p30 = pins.find((p) => p.element === id(130))! as unknown as { id: string; x: number; y: number };
+    expect(pick3d(scene.items, grid, flat, { sx: p30.x, sy: p30.y, r: 0.5, hidden: new Set(['line']), labels: [], many: false, zoneZ: 0 })).toEqual([p30.id]);
+    expect([...focusOf(scene, [p30.id])!.near]).toEqual([p30.id]);
   });
 
   it('a world whose elements all link to nothing places none and lists them all', () => {
@@ -225,14 +233,11 @@ describe('the words', () => {
     expect(ceilingWords3d()).toBe('This world holds more than 10,000 elements you can see, too many for the mapper to lay out here.');
     expect(HEAD).toBe('By links, in 3D (not saved)');
     expect(KIND_WORDS).toBe('a layout · 3D · not saved');
-    expect(unplacedWords3d(0)).toBeNull();
-    expect(unplacedWords3d(1)).toBe('1 element you can see links to no other and stands on no plate, so this picture does not place it.');
-    expect(unplacedWords3d(1234)).toBe('1,234 elements you can see link to no other and stand on no plate, so this picture does not place them.');
-    expect(emptyWords3d(0)).toBe(EMPTY_LINE);
-    expect(emptyWords3d(1)).toBe('Nothing to lay out for you here: the element you can see links to no other and stands on no plate.');
-    expect(emptyWords3d(2)).toBe('Nothing to lay out for you here: the 2 elements you can see link to no other and stand on no plate.');
+    expect(floorWords3d(0)).toBeNull();
+    expect(floorWords3d(1)).toBe('1 element you can see links to no other and is on no plate, so it stands on the floor beside the picture.');
+    expect(floorWords3d(1234)).toBe('1,234 elements you can see link to no other and are on no plate, so they stand on the floor beside the picture.');
     expect(OLD_LINE).toBe('The layout method has changed since the picture you last saw here, so that picture was dropped and this one was laid out from nothing.');
-    const all = [OLD_LINE, unplacedWords3d(1)!, unplacedWords3d(2)!, emptyWords3d(1), emptyWords3d(2), FRESH_LINE, keptWords(3), LOST_LINE, NO_STORE_LINE, NOT_KEPT_LINE, NO_PLATE_LINE, EMPTY_LINE, FAILED_LINE, STOPPED_LINE, UNSAVED_LINE, CHANGE_LINE, OFFER_WORDS, ceilingWords3d(), HEAD];
+    const all = [OLD_LINE, floorWords3d(1)!, floorWords3d(2)!, FRESH_LINE, keptWords(3), LOST_LINE, NO_STORE_LINE, NOT_KEPT_LINE, NO_PLATE_LINE, EMPTY_LINE, FAILED_LINE, STOPPED_LINE, UNSAVED_LINE, CHANGE_LINE, OFFER_WORDS, ceilingWords3d(), HEAD];
     for (const w of all) {
       expect(w).not.toMatch(/[—–]/);
       expect(w).not.toMatch(/every element/i);

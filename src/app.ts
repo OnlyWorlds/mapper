@@ -14,10 +14,11 @@ import { accountOrder, homeOrder, homeRow, roleWords, rungOf, type MapCard } fro
 import { encodeHold, flatHold, holdKey, holdsFor, isPublicKey, keepHold, keyHash12, pageHolds, readHold, type HoldRead, type PageHolds, type Who } from './core/hold';
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
 import {
-  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_BARE_LINE, CHANGE_LINE, CHANGE_PAGE_LINE, emptyWords3d, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
+  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_BARE_LINE, CHANGE_LINE, CHANGE_PAGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
   type Links3dAnswer, madeUp, NO_PLATE_LINE, OLD_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, spaceOf,
-  START_BUTTON, STOPPED_LINE, UNSAVED_LINE, unplacedWords3d,
+  START_BUTTON, STOPPED_LINE, UNSAVED_LINE, floorWords3d,
 } from './core/links3d';
+import { floorBesideGroups } from './core/floor';
 import { elementTypeOf, isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
 import { bodiesToRead, chunks, sliceFor, zonesToRead, type Slice } from './core/slice';
@@ -72,9 +73,9 @@ const SIGNED_OUT_LINE = 'Signed out, and the sign-in is removed from your OnlyWo
 const UNCONFIRMED_LINE = 'Signed out here, but OnlyWorlds did not confirm the sign-in was removed, so it may still be live. Remove it in Account settings on onlyworlds.com.';
 const LEFT_LINE = 'You left the page, so the mapper signed you out.';
 
-/** The 3D picture's line for what it does not place, in the slot the 2D layout maps' count takes. */
-function unplacedLine(answer: Pick<Links3dAnswer, 'unplaced'>): MapStatus['count'] {
-  const text = unplacedWords3d(answer.unplaced.length);
+/** The 3D picture's line for what stands on the floor, in the slot the 2D layout maps' count takes. */
+function floorLine(answer: Pick<Links3dAnswer, 'unplaced'>): MapStatus['count'] {
+  const text = floorWords3d(answer.unplaced.length);
   return text ? { text, cls: 'note' } : null;
 }
 
@@ -852,6 +853,13 @@ export class App {
 
   /** What the last press drew, for the walks: never the rows. Points are the answer's, rounded, in its own frame. */
   links3d: { from: 'nothing' | 'kept' | 'lost' | 'old'; fresh: number; nodes: number; plate: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[]; unplaced: string[] } | null = null;
+  /** The floor as drawn, for the walks: how many beside a group, how many gathered by kind, every drawn point by id. */
+  floor3d: { moved: number; gathered: number; gatheredKinds: string[]; ids: string[]; xyz: number[] } | null = null;
+  /**
+   * The holds whose picture an earlier version of the method made, dropped at the read and not yet
+   * said: whichever way that press ends (drawn, stopped, failed, left), the next line said says it once.
+   */
+  private oldDropped = new Set<string>();
 
   /** The press on a world's page: offered only when the world fits the ceiling, else a line says why. */
   private layoutOffer(ws: WorldState): HTMLElement {
@@ -904,12 +912,17 @@ export class App {
       const stopOnLeave = () => c.abort();
       leave.addEventListener('abort', stopOnLeave, { once: true });
       this.links3d = null;
+      this.floor3d = null;
       let box = head();
+      let key: string | null = null;
       const live = () => gen === this.gen && ctl === c && !c.signal.aborted;
       const mine = () => gen === this.gen && ctl === c;
       const say = (cls: string, text: string, ...after: HTMLElement[]) => {
         clear(box);
         box.append(h('p', { class: cls, role: cls === 'failure' ? 'alert' : 'status' }, text, ...after.flatMap((b) => [' ', b])));
+        // A picture of an earlier method dropped by this press (or one left before it was said) is
+        // said once, under whatever line the press ends with.
+        if (key && this.oldDropped.delete(key)) box.append(h('p', { class: 'note old3d', role: 'status' }, OLD_LINE));
       };
       const tryAgain = () => button('Try again', () => void run(fromNothing), { class: 'retry' });
       // Cancel: nothing is drawn after it, and the next press resumes at the types not read whole.
@@ -996,7 +1009,6 @@ export class App {
         tick();
 
         // The hold: none when asked to lay out from nothing; a hold that cannot be read is none, said.
-        let key: string | null = null;
         let hold: HoldRead = { state: 'none' };
         try {
           key = holdKey(ws.id, ws.rung, await this.whoReads(ws));
@@ -1007,6 +1019,7 @@ export class App {
         // that does not answer in time, or a Cancel meanwhile, never holds the press.
         const store = key ? holdsFor(key, openHolds, this.holds) : null;
         if (key && store && !fromNothing) hold = await readHold(store, key, c.signal);
+        if (key && hold.state === 'old') this.oldDropped.add(key);
         if (!live()) return stopped();
         const held = hold.state === 'held' ? flatHold(hold.held) : null;
         usedHold = !!held;
@@ -1014,10 +1027,11 @@ export class App {
         const answer = await layOutOffPage({ rows, space, rung: ws.rung, held }, c.signal);
         if (!live()) return stopped();
         clearInterval(timer);
-        if (!answer.ids.length) return say('note empty3d', emptyWords3d(answer.unplaced.length));
+        if (!answer.ids.length && !answer.unplaced.length) return say('note empty3d', EMPTY_LINE);
 
         const rounded = roundPoints(answer.points);
-        const from = pictureFrom(answer, hold.state);
+        const owed = !!key && this.oldDropped.has(key);
+        const from = pictureFrom(answer, owed ? 'old' : hold.state);
         // Where the picture is kept, said only where it is: the device's (the public's), this page's
         // (an account's or a key's), or none when there is no storage (its own line says so).
         const change = !key || hold.state === 'no-store' ? CHANGE_BARE_LINE : isPublicKey(key) ? CHANGE_LINE : CHANGE_PAGE_LINE;
@@ -1028,6 +1042,7 @@ export class App {
         try {
           const holdLine = from === 'kept' ? keptWords(answer.fresh) : from === 'old' ? OLD_LINE : from === 'lost' ? LOST_LINE : FRESH_LINE;
           buildMs = this.drawLayout(ws, rows, answer, rounded, holdLine, notes, () => void run(true));
+          if (from === 'old' && key) this.oldDropped.delete(key);
         } catch (err) {
           console.error(err);
           // The drawing may have cleared the page: the head comes back before the line is said.
@@ -1042,7 +1057,7 @@ export class App {
           if (!kept && gen === this.gen && ctl === c && this.map) {
             notes[notes.indexOf(change)] = CHANGE_BARE_LINE;
             notes.push(NOT_KEPT_LINE);
-            this.map.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: unplacedLine(answer) });
+            this.map.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: floorLine(answer) });
           }
         }
       } catch (err) {
@@ -1079,11 +1094,14 @@ export class App {
       const t = byId.get(id)?.type;
       return typeof t === 'string' ? t : null;
     };
-    // Only the placed elements become Pins; the unplaced are counted in their own line, never drawn.
-    const made = madeUp(ids, rounded, typeOf);
+    // What the method does not place stands on the floor beside the groups (the mapper's drawing,
+    // made from the answer alone; the hold keeps only the method's points).
+    const floor = floorBesideGroups({ ids, points: rounded, group: answer.group, unplaced: answer.unplaced, typeOf });
+    this.floor3d = { moved: floor.moved, gathered: floor.gathered, gatheredKinds: floor.gatheredKinds, ids: floor.ids.slice(ids.length), xyz: [...floor.points.subarray(3 * ids.length)] };
+    const made = madeUp(floor.ids, floor.points, typeOf);
     const maps = [...ws.store.ofType('map'), made.map];
     const reading: MapReading = { ...readMap(made.map, maps), words: KIND_WORDS };
-    const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: rows, pinned: [...ids] };
+    const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: rows, pinned: [...floor.ids] };
     const scene = build({ slice, reading, ground: null, rung: ws.rung, complete: true, pictureSize: null, versionOf: () => 1 }, new GraphCache());
 
     this.map?.destroy();
@@ -1112,7 +1130,7 @@ export class App {
     this.map = mv;
     mv.setExtra(h('p', { class: 'held3d' }, holdLine, ' ', button(AGAIN_BUTTON, again, { class: 'again3d' })));
     mv.setScene(scene);
-    mv.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: unplacedLine(answer) });
+    mv.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: floorLine(answer) });
     return scene.ms;
   }
 

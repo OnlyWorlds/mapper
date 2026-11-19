@@ -29,7 +29,7 @@ export function layOut(input: Links3dInput, now: () => number = () => performanc
 /**
  * The method over a graph already made, with the hold handed as the mapper keeps it (whole numbers,
  * so `heldUnit` 1). Only the placed nodes come back in `ids` and `points`, paired by position; a node
- * the method does not place (linked to no other and on no plate) is in `unplaced` and nowhere else.
+ * the method does not place (linked to no other and on no plate) is in `unplaced`, for the mapper's floor.
  */
 export function layOutGraph(graph: OwLayoutGraph, space: Row[], flat: Links3dInput['held']): Omit<Links3dAnswer, 'ms'> {
   let held = flat ? unflatHold(flat) : null;
@@ -48,6 +48,7 @@ export function layOutGraph(graph: OwLayoutGraph, space: Row[], flat: Links3dInp
     ids: a.ids,
     points: a.points,
     how: a.how,
+    group: a.group,
     unplaced: a.unplaced,
     fresh: newCount(a.ids, held),
     heldUsed: held !== null,

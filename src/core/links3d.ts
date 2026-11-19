@@ -28,7 +28,9 @@ export interface Links3dAnswer {
   points: Float64Array;
   /** How the method placed `ids[i]` ('map' for an element at its Pin on the plate). */
   how: string[];
-  /** The elements not placed (linked to no other and on no plate), by id: listed, never drawn. */
+  /** The method's `group` for `ids[i]`: the centre it stands with, or null (the floor reads it). */
+  group: (string | null)[];
+  /** The elements not placed (linked to no other and on no plate), by id: the mapper draws them on its floor. */
   unplaced: string[];
   /** The elements of this answer whose id is not in the hold handed in (R1.1). */
   fresh: number;
@@ -151,20 +153,14 @@ export const CANCEL_BUTTON = 'Cancel';
 export const START_BUTTON = 'Lay out';
 
 /**
- * What the picture does not place: the elements linked to no other and on no plate, counted (the
- * line the 2D layout maps give what they do not place). Nothing at 0.
+ * How many stand on the floor: the elements the method does not place (linked to no other and on no
+ * plate), drawn by the mapper beside the picture. Said in the slot the 2D layout maps' count takes;
+ * nothing at 0.
  */
-export function unplacedWords3d(n: number): string | null {
+export function floorWords3d(n: number): string | null {
   if (n <= 0) return null;
   const one = n === 1;
-  return `${n.toLocaleString('en-US')} ${one ? 'element' : 'elements'} you can see ${one ? 'links' : 'link'} to no other and ${one ? 'stands' : 'stand'} on no plate, so this picture does not place ${one ? 'it' : 'them'}.`;
-}
-
-/** Nothing placed, though the reader sees some elements: none of them links to another or stands on a plate. */
-export function emptyWords3d(unplaced: number): string {
-  if (unplaced <= 0) return EMPTY_LINE;
-  const one = unplaced === 1;
-  return `Nothing to lay out for you here: the ${one ? 'element' : `${unplaced.toLocaleString('en-US')} elements`} you can see ${one ? 'links' : 'link'} to no other and ${one ? 'stands' : 'stand'} on no plate.`;
+  return `${n.toLocaleString('en-US')} ${one ? 'element' : 'elements'} you can see ${one ? 'links' : 'link'} to no other and ${one ? 'is' : 'are'} on no plate, so ${one ? 'it stands' : 'they stand'} on the floor beside the picture.`;
 }
 
 /** The line under the picture: which picture it drew. */

@@ -12,12 +12,11 @@ const CHANGE = 'The method is not final; this device keeps the picture still mea
 const FRESH = 'Laid out from nothing.';
 const LOST = 'No kept picture could be used, so this one was laid out from nothing.';
 const OLD = 'The layout method has changed since the picture you last saw here, so that picture was dropped and this one was laid out from nothing.';
-const notPlaced = (n) => `${n} ${n === 1 ? 'element' : 'elements'} you can see ${n === 1 ? 'links' : 'link'} to no other and ${n === 1 ? 'stands' : 'stand'} on no plate, so this picture does not place ${n === 1 ? 'it' : 'them'}.`;
+const onFloor = (n) => `${n} ${n === 1 ? 'element' : 'elements'} you can see ${n === 1 ? 'links' : 'link'} to no other and ${n === 1 ? 'is' : 'are'} on no plate, so ${n === 1 ? 'it stands' : 'they stand'} on the floor beside the picture.`;
 const kept = (n) => `Kept the picture you last saw here; ${n} placed new.`;
 const CEILING = 'This world holds more than 10,000 elements you can see, too many for the mapper to lay out here.';
 const NO_PLATE = 'The world’s map was too large to use (more than 10,000 Pins), so this picture has no plate: its pinned elements are laid out with the rest.';
 const EMPTY = 'Nothing to lay out for you here.';
-const EMPTY_LONE = 'Nothing to lay out for you here: the 2 elements you can see link to no other and stand on no plate.';
 const STOPPED = 'Stopped. Nothing was drawn.';
 const HEAD = 'By links, in 3D (not saved)';
 const KIND = 'a layout · 3D · not saved';
@@ -34,12 +33,12 @@ const PINBIG = '8c8c8c8c-8c8c-7c8c-8c8c-8c8c8c8c8c8c'; // 20,000 Pins by its cou
 // (linked, they are placed: an element linked to nothing and on no plate is not, since 4.182.0).
 const BENT = '8e8e8e8e-8e8e-7e8e-8e8e-8e8e8e8e8e8e';
 const SLOW = '8d8d8d8d-8d8d-7d8d-8d8d-8d8d8d8d8d8d'; // 2,000 Characters richly linked, for a Cancel while the layout runs
-const LONE = '8f8f8f8f-8f8f-7f8f-8f8f-8f8f8f8f8f8f'; // two Characters linked to nothing and pinned nowhere: nothing placed
+const LONE = '8f8f8f8f-8f8f-7f8f-8f8f-8f8f8f8f8f8f'; // two Characters linked to nothing and pinned nowhere: the method places none, both on the floor
 const COAST = lid(LW, 1);
 const C = (n) => lid(LW, 100 + n);
 const L = (n) => lid(LW, 200 + n);
 const NEW = C(9);
-// Gil and Cairn link to nothing and stand on no plate: listed, never drawn (by id, in code point order).
+// Gil and Cairn link to nothing and stand on no plate: the method places neither, the mapper stands them on its floor.
 const UNPLACED = [C(7), L(4)];
 /** Each placed element's neighbours by its links (Hale, hidden, cut): a press's focus is it and these. */
 const NEAR = {
@@ -258,11 +257,13 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   state.slow = null;
   const first = await info();
   const reads1 = wholeReads(from);
-  check(`${vp} links3d the picture is drawn: one Pin per element it places (9 of the 11 this reader sees, the hidden one cut), with links`, ok1 && first?.nodes === 9 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 9 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) === 12 && (await page.locator('.status .counts').innerText()) === '9 elements · 12 link lines', JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
-  const drawnEls = (await page.evaluate(() => window.__mapper.pins())).map((p) => p.element);
-  check(`${vp} links3d the two linked to nothing are listed, never drawn: no Pin and no point for them`, JSON.stringify(first?.unplaced) === JSON.stringify(UNPLACED) && UNPLACED.every((u) => !drawnEls.includes(u) && !first.ids.includes(u)) && first.xyz.length === 3 * first.ids.length, JSON.stringify({ unplaced: first?.unplaced, drawn: drawnEls.length }));
+  check(`${vp} links3d the picture is drawn: one Pin per element this reader sees (11 of 12, the hidden one cut; 9 placed by the method, 2 on the floor), with links`, ok1 && first?.nodes === 9 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 11 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) === 12 && (await page.locator('.status .counts').innerText()) === '11 elements · 12 link lines', JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
+  const floor1 = await page.evaluate(() => window.__mapper.floor3d);
+  const drawnPins = await page.evaluate(() => window.__mapper.pins());
+  const placedAt = new Set(drawnPins.filter((p) => !UNPLACED.includes(p.element)).map((p) => `${p.x},${p.y},${p.z}`));
+  check(`${vp} links3d the two linked to nothing stand on the floor beside the groups: drawn, each at a point of its own, the method's points kept for the rest`, JSON.stringify(first?.unplaced) === JSON.stringify(UNPLACED) && UNPLACED.every((u) => !first.ids.includes(u)) && first.xyz.length === 3 * first.ids.length && JSON.stringify(floor1?.ids) === JSON.stringify(UNPLACED) && floor1?.moved === 2 && floor1?.gathered === 0 && UNPLACED.every((u) => { const p = drawnPins.find((q) => q.element === u); return !!p && !placedAt.has(`${p.x},${p.y},${p.z}`); }), JSON.stringify({ unplaced: first?.unplaced, floor: floor1 }));
   const unplacedLine = async () => ((await page.locator('.status .unplaced').count()) ? (await page.locator('.status .unplaced').first().innerText()).trim() : null);
-  check(`${vp} links3d one line says what the picture does not place: "${notPlaced(2)}"`, (await unplacedLine()) === notPlaced(2) && (await page.locator('.status .unplaced').count()) === 1, String(await unplacedLine()));
+  check(`${vp} links3d one line says how many stand on the floor: "${onFloor(2)}"`, (await unplacedLine()) === onFloor(2) && (await page.locator('.status .unplaced').count()) === 1, String(await unplacedLine()));
   check(`${vp} links3d the world's map is the plate: its four pinned elements stand at their Pins`, first?.plate === 4, JSON.stringify({ plate: first?.plate }));
   check(`${vp} links3d a first press says "${FRESH}"`, (await heldLine()) === FRESH, String(await heldLine()));
   check(`${vp} links3d the bar names the map and its kind`, (await page.locator('.map-name').innerText()) === HEAD && (await page.locator('.kind').innerText()) === KIND, `${await page.locator('.kind').innerText()}`);
@@ -326,6 +327,32 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
       break;
     }
     check(`${vp} links3d a placed Pin stands clear to point at`, !!target, JSON.stringify(seen.slice(0, 3)));
+    // And one on the floor: hovered, pressed, its card, its focus itself alone (it has no line).
+    let lone = null;
+    for (const [i, p] of ps.entries()) {
+      const pt = seen[i];
+      if (!UNPLACED.includes(p.element) || !pt || pt.x < 40 || pt.x > vw.width - 40 || pt.y < vw.height * 0.25 || pt.y > vw.height - 40) continue;
+      if (!seen.every((q) => !q || q === pt || Math.hypot(q.x - pt.x, q.y - pt.y) >= 20)) continue;
+      if (!String(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y])).includes('surface-3d')) continue;
+      lone = { ...p, ...pt };
+      break;
+    }
+    check(`${vp} links3d a Pin on the floor stands clear to point at`, !!lone, JSON.stringify(ps.filter((p) => UNPLACED.includes(p.element)).map((p) => seen[ps.indexOf(p)])));
+    if (lone) {
+      await page.mouse.move(lone.x, lone.y);
+      await page.waitForTimeout(250);
+      const hovered = (await page.evaluate(() => document.querySelector('canvas.surface-3d').style.cursor)) === 'pointer';
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+      const sel = await page.evaluate(() => window.__mapper.selection);
+      const focus = (await page.evaluate(() => window.__mapper.view3d))?.focus;
+      const name = lone.element === C(7) ? 'Gil' : 'Cairn';
+      const card = await page.locator('.card').innerText().catch(() => '');
+      check(`${vp} links3d a Pin on the floor is hovered and pressed as any other: selected, its card, its focus itself alone`, hovered && JSON.stringify(sel) === JSON.stringify([lone.id]) && card.includes(name) && !!focus && focus.pins === 1 && focus.lines === 0, JSON.stringify({ hovered, sel, focus, card: card.slice(0, 80) }));
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+    }
     if (target) {
       await page.mouse.move(target.x, target.y);
       await page.waitForTimeout(250);
@@ -348,7 +375,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   await page.locator('.tools button', { hasText: 'List' }).click();
   await page.waitForSelector('.list-rows .row', { timeout: 5000 }).catch(() => {});
   const listMeta = await page.locator('.list-rows .row-meta').allInnerTexts();
-  check(`${vp} links3d the List names each element it places and its type, no position`, listMeta.length === 9 && listMeta.every((m) => /^(Character|Location)$/.test(m)), JSON.stringify(listMeta.slice(0, 4)));
+  check(`${vp} links3d the List names each element drawn (the floor's too) and its type, no position`, listMeta.length === 11 && listMeta.every((m) => /^(Character|Location)$/.test(m)), JSON.stringify(listMeta.slice(0, 4)));
   await page.locator('.list-rows .row', { hasText: 'Port' }).first().click();
   await page.waitForTimeout(400);
   const card = await page.locator('.card').innerText().catch(() => '');
@@ -396,6 +423,8 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     check(`${vp} links3d Lay out again from nothing says "${FRESH}"`, (await heldLine()) === FRESH && (await info())?.from === 'nothing', String(await heldLine()));
     const h2 = await holdOf(KEY);
     check(`${vp} links3d Lay out again from nothing replaces the hold`, !!h2 && h2.at > atBefore, `${atBefore} -> ${h2?.at}`);
+    const floor2 = await page.evaluate(() => window.__mapper.floor3d);
+    check(`${vp} links3d the same world laid out again stands the same floor, point for point`, JSON.stringify(floor2) === JSON.stringify(floor1), JSON.stringify({ floor1, floor2 }));
 
     // 7. Flat: written beside layout, kept by a reload; a gesture writes no camera; 3D drops it.
     await page.locator('button.view-toggle').click();
@@ -498,17 +527,22 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   check(`${vp} links3d the press after a Cancel reads only what was not read whole`, JSON.stringify(wholeReads(from)) === JSON.stringify(['location']) && readsBefore.includes('character'), `before ${JSON.stringify(readsBefore)}, after ${JSON.stringify(wholeReads(from))}`);
 
   // 11. Cancel while the worker lays it out (2,000 richly linked elements): the worker ends, nothing drawn after.
+  // A picture of the method's version 1 is kept for this world first: the press drops it, and the
+  // Cancel's line says so once.
+  await plant(`${SLOW}|public|public`, { v: 1, key: `${SLOW}|public|public`, at: Date.now(), ids: [lid(SLOW, 1001)], xyz: [0, 0, 0] });
   await page.goto(`${base}/?world=${SLOW}&layout=by-links-3d`);
   const laying = await waitUntil(page, () => /^Laying out the [\d,]+ elements read, \d+ s so far\.$/.test(document.querySelector('.running3d')?.textContent ?? ''), null, 30_000);
   const linesAt = await page.locator('.running3d').textContent().catch(() => null);
   if (laying) await page.locator('button.cancel3d').click();
   await page.waitForTimeout(phone ? 4000 : 6000);
   check(`${vp} links3d Cancel while the layout runs: "${STOPPED}", and nothing drawn after`, laying && (await boxText())?.startsWith(STOPPED) && (await page.evaluate(() => window.__mapper.scene)) === null && (await info()) === null, `${laying ? 'cancelled at' : 'never saw'} "${linesAt}"; now ${await boxText()}`);
+  check(`${vp} links3d the version-1 picture the stopped press dropped is said under its line`, (await boxText())?.endsWith(OLD) && (await holdOf(`${SLOW}|public|public`)) === null, String(await boxText()));
   if (!phone) {
     await page.locator('.links3d .status-page button.again3d').click();
     await drawn();
     const big = await info();
     check(`${vp} links3d a world of 2,000 richly linked elements draws`, big?.nodes === 2000, JSON.stringify({ nodes: big?.nodes }));
+    check(`${vp} links3d the next press says the dropped picture no more: "${FRESH}"`, (await heldLine()) === FRESH && big?.from === 'nothing', String(await heldLine()));
     console.log(`  links3d ${which} measure: Slow, ${big?.nodes} elements: layout in the worker ${big?.layoutMs?.toFixed(1)} ms, build ${big?.buildMs?.toFixed(1)} ms`);
   }
 
@@ -561,10 +595,11 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     from = sent.length;
     await page.goto(`${base}/?world=${PINBIG}&layout=by-links-3d`);
     await drawn();
-    check(`${vp} links3d Pins past their ceiling: drawn with no plate, said, and no Pin read; the one linked to nothing not placed, and said`, (await statusText()).includes(NO_PLATE) && !sent.slice(from).some((u) => u.pathname.startsWith('/api/v2/pin')) && (await info())?.nodes === 2 && (await unplacedLine()) === notPlaced(1), (await statusText()).slice(0, 300));
+    check(`${vp} links3d Pins past their ceiling: drawn with no plate, said, and no Pin read; the one linked to nothing on the floor, and said`, (await statusText()).includes(NO_PLATE) && !sent.slice(from).some((u) => u.pathname.startsWith('/api/v2/pin')) && (await info())?.nodes === 2 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 3 && (await unplacedLine()) === onFloor(1), (await statusText()).slice(0, 300));
     await page.goto(`${base}/?world=${LONE}&layout=by-links-3d`);
-    await waitUntil(page, () => !!document.querySelector('.empty3d'), null, 15_000);
-    check(`${vp} links3d a world whose elements link to nothing places none, and says why`, (await boxText()) === EMPTY_LONE && (await info()) === null, String(await boxText()));
+    await drawn();
+    const lone = await page.evaluate(() => ({ floor: window.__mapper.floor3d, pins: window.__mapper.scene?.counts.pins }));
+    check(`${vp} links3d a world whose elements link to nothing: the method places none, both stand on the floor, said`, (await info())?.nodes === 0 && lone.pins === 2 && lone.floor?.gathered === 2 && (await unplacedLine()) === onFloor(2), JSON.stringify({ lone, line: await unplacedLine() }));
   }
 
   if (!phone) {
