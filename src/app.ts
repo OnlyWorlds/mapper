@@ -14,11 +14,10 @@ import { accountOrder, homeOrder, homeRow, roleWords, rungOf, type MapCard } fro
 import { encodeHold, flatHold, holdKey, holdsFor, isPublicKey, keepHold, keyHash12, pageHolds, readHold, type HoldRead, type PageHolds, type Who } from './core/hold';
 import { elementMapOrder, readMap, type MapReading } from './core/kinds';
 import {
-  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_BARE_LINE, CHANGE_LINE, CHANGE_PAGE_LINE, EMPTY_LINE, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
-  type Links3dAnswer, madeUp, NO_PLATE_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, START_BUTTON,
-  STOPPED_LINE, UNSAVED_LINE,
+  AGAIN_BUTTON, CANCEL_BUTTON, ceilingWords3d, CHANGE_BARE_LINE, CHANGE_LINE, CHANGE_PAGE_LINE, emptyWords3d, FAILED_LINE, FRESH_LINE, HEAD, keptWords, KIND_WORDS, layingWords, LOST_LINE, MADE_UP_MAP,
+  type Links3dAnswer, madeUp, NO_PLATE_LINE, OLD_LINE, pictureFrom, NO_STORE_LINE, NOT_KEPT_LINE, OFFER_BUTTON, OFFER_HEAD, OFFER_WORDS, PIN_CEILING, readAtWords, readingWords, roundPoints, spaceOf,
+  START_BUTTON, STOPPED_LINE, UNSAVED_LINE, unplacedWords3d,
 } from './core/links3d';
-import { floorBesideGroups } from './core/floor';
 import { elementTypeOf, isId, linkId, str } from './core/rows';
 import { build, GraphCache, type ReaderRung, type Scene } from './core/scene';
 import { bodiesToRead, chunks, sliceFor, zonesToRead, type Slice } from './core/slice';
@@ -72,6 +71,12 @@ const SIGN_IN_HINT = 'The mapper only reads and never makes keys. Your sign-in i
 const SIGNED_OUT_LINE = 'Signed out, and the sign-in is removed from your OnlyWorlds account. On a shared computer, sign out of onlyworlds.com too: until you do, the next Sign in here goes straight through.';
 const UNCONFIRMED_LINE = 'Signed out here, but OnlyWorlds did not confirm the sign-in was removed, so it may still be live. Remove it in Account settings on onlyworlds.com.';
 const LEFT_LINE = 'You left the page, so the mapper signed you out.';
+
+/** The 3D picture's line for what it does not place, in the slot the 2D layout maps' count takes. */
+function unplacedLine(answer: Pick<Links3dAnswer, 'unplaced'>): MapStatus['count'] {
+  const text = unplacedWords3d(answer.unplaced.length);
+  return text ? { text, cls: 'note' } : null;
+}
 
 function waymarkReader(ws: WorldState): 'member' | 'guest' | 'public' {
   if (ws.reader === 'public') return 'public';
@@ -846,9 +851,7 @@ export class App {
   // ---- the world laid out by its links in 3D, here and unsaved
 
   /** What the last press drew, for the walks: never the rows. Points are the answer's, rounded, in its own frame. */
-  links3d: { from: 'nothing' | 'kept' | 'lost'; fresh: number; nodes: number; plate: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[] } | null = null;
-  /** The shelf as drawn, for the walks: how many moved beside a group, how many gathered by kind, the drawn points. */
-  floor3d: { moved: number; gathered: number; gatheredKinds: string[]; xyz: number[] } | null = null;
+  links3d: { from: 'nothing' | 'kept' | 'lost' | 'old'; fresh: number; nodes: number; plate: number; layoutMs: number; buildMs: number; ids: string[]; xyz: number[]; unplaced: string[] } | null = null;
 
   /** The press on a world's page: offered only when the world fits the ceiling, else a line says why. */
   private layoutOffer(ws: WorldState): HTMLElement {
@@ -987,7 +990,7 @@ export class App {
         const rows: Row[] = [];
         for (const t of plan.types) for (const r of ws.countRows.get(t) ?? []) rows.push({ ...r, type: t });
         const maps = ws.store.ofType('map');
-        const space: Row[] = [...maps.map((m) => ({ ...m, type: 'map' })), ...(pins ?? []).map((p) => ({ ...p, type: 'pin', map: linkId(p.map) ?? p.map }))];
+        const space = spaceOf(maps, pins);
         n = rows.length;
         laying = true;
         tick();
@@ -1011,7 +1014,7 @@ export class App {
         const answer = await layOutOffPage({ rows, space, rung: ws.rung, held }, c.signal);
         if (!live()) return stopped();
         clearInterval(timer);
-        if (!answer.ids.length) return say('note empty3d', EMPTY_LINE);
+        if (!answer.ids.length) return say('note empty3d', emptyWords3d(answer.unplaced.length));
 
         const rounded = roundPoints(answer.points);
         const from = pictureFrom(answer, hold.state);
@@ -1023,14 +1026,15 @@ export class App {
         if (hold.state === 'no-store') notes.push(NO_STORE_LINE);
         let buildMs: number;
         try {
-          buildMs = this.drawLayout(ws, rows, answer, rounded, from === 'kept' ? keptWords(answer.fresh) : from === 'lost' ? LOST_LINE : FRESH_LINE, notes, () => void run(true));
+          const holdLine = from === 'kept' ? keptWords(answer.fresh) : from === 'old' ? OLD_LINE : from === 'lost' ? LOST_LINE : FRESH_LINE;
+          buildMs = this.drawLayout(ws, rows, answer, rounded, holdLine, notes, () => void run(true));
         } catch (err) {
           console.error(err);
           // The drawing may have cleared the page: the head comes back before the line is said.
           box = head();
           return say('failure', FAILED_LINE, tryAgain());
         }
-        this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, plate: answer.how.filter((x) => x === 'map').length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded] };
+        this.links3d = { from, fresh: answer.fresh, nodes: answer.ids.length, plate: answer.how.filter((x) => x === 'map').length, layoutMs: answer.ms, buildMs, ids: answer.ids, xyz: [...rounded], unplaced: [...answer.unplaced] };
 
         // Keep the picture still for the next press: the rounded points in the answer's own frame.
         if (key && store && hold.state !== 'no-store') {
@@ -1038,7 +1042,7 @@ export class App {
           if (!kept && gen === this.gen && ctl === c && this.map) {
             notes[notes.indexOf(change)] = CHANGE_BARE_LINE;
             notes.push(NOT_KEPT_LINE);
-            this.map.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: null });
+            this.map.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: unplacedLine(answer) });
           }
         }
       } catch (err) {
@@ -1075,10 +1079,8 @@ export class App {
       const t = byId.get(id)?.type;
       return typeof t === 'string' ? t : null;
     };
-    // The shelf drawn beside the groups (the mapper's drawing; the hold keeps the method's points).
-    const floor = floorBesideGroups({ ids, points: rounded, group: answer.group, part: answer.part, piece: answer.piece, typeOf });
-    this.floor3d = { moved: floor.moved, gathered: floor.gathered, gatheredKinds: floor.gatheredKinds, xyz: [...floor.points] };
-    const made = madeUp(ids, floor.points, typeOf);
+    // Only the placed elements become Pins; the unplaced are counted in their own line, never drawn.
+    const made = madeUp(ids, rounded, typeOf);
     const maps = [...ws.store.ofType('map'), made.map];
     const reading: MapReading = { ...readMap(made.map, maps), words: KIND_WORDS };
     const slice: Slice = { mapId: MADE_UP_MAP, groundId: null, maps, pins: made.pins, markers: [], zones: [], bodies: rows, pinned: [...ids] };
@@ -1110,7 +1112,7 @@ export class App {
     this.map = mv;
     mv.setExtra(h('p', { class: 'held3d' }, holdLine, ' ', button(AGAIN_BUTTON, again, { class: 'again3d' })));
     mv.setScene(scene);
-    mv.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: null });
+    mv.setStatus({ progress: null, long: null, wait: null, failure: null, drawing: null, notes: [...notes], count: unplacedLine(answer) });
     return scene.ms;
   }
 

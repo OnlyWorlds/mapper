@@ -2,7 +2,7 @@
 // count, its words and what it reads. Pure: the reads are the app's. The graph is `worldGraph`'s
 // for this reader with no options, so it leaves out what that reader's graph leaves out (hidden,
 // proposed and room elements, the reading aids); the words say "for you" and never "every element".
-import { ELEMENT_TYPES, unplacedByKind, worldGraph, type OwMapSpace } from '@onlyworlds/sdk';
+import { ELEMENT_TYPES, unplacedByKind, worldGraph, type OwLayoutGraph, type OwMapSpace } from '@onlyworlds/sdk';
 import { readerFor, type ReaderRung } from './scene';
 import type { Row } from './types';
 
@@ -46,7 +46,11 @@ export function countPlan(types: Record<string, unknown> | null | undefined): { 
 export function countUnplaced(rows: ReadonlyMap<string, readonly Row[]>, rung: ReaderRung, placed: readonly string[]): number {
   const elements: Row[] = [];
   for (const [type, list] of rows) for (const r of list) elements.push({ ...r, type });
-  const graph = worldGraph({ elements }, readerFor(rung, elements));
+  return unplacedCount(worldGraph({ elements }, readerFor(rung, elements)), placed);
+}
+
+/** The count over a graph already made: how many of what `by-kind` would place have no Pin here. */
+export function unplacedCount(graph: OwLayoutGraph, placed: readonly string[]): number {
   return unplacedByKind(graph, placed).length;
 }
 

@@ -17,7 +17,7 @@
     "walk:links3d": "node walk/links3d.mjs chromium && node walk/links3d.mjs firefox"
   },
   "dependencies": {
-    "@onlyworlds/sdk": "4.174.0",
+    "@onlyworlds/sdk": "4.182.0",
     "three": "0.186.1"
   },
   "devDependencies": {

@@ -4,6 +4,7 @@
 // new. The reads, the worker and the device's hold are the page's.
 import { roundHalfEven } from '@onlyworlds/sdk';
 import { COUNT_CEILING } from './unplaced';
+import { linkId } from './rows';
 import { plural } from './words';
 import type { Row } from './types';
 
@@ -21,15 +22,14 @@ export const PIN_CEILING = 10_000;
 
 /** What the worker answers for one press. */
 export interface Links3dAnswer {
+  /** The placed elements only: a node the method does not place is in `unplaced`, never here. */
   ids: string[];
-  /** x, y, z of `ids[i]` at `3 * i`, as the method answered them (not rounded, not moved). */
+  /** x, y, z of `ids[i]` at `3 * i`, as the method answered them (not rounded, not moved): read by id through `ids`. */
   points: Float64Array;
+  /** How the method placed `ids[i]` ('map' for an element at its Pin on the plate). */
   how: string[];
-  group: (string | null)[];
-  /** The method's `part`: 'no-link' for an element on its shelf (nothing links it to the main piece). */
-  part: (string | null)[];
-  /** The shelf piece of `ids[i]` (shelf elements linked to each other share one), else -1 (`shelfPieces`). */
-  piece: Int32Array;
+  /** The elements not placed (linked to no other and on no plate), by id: listed, never drawn. */
+  unplaced: string[];
   /** The elements of this answer whose id is not in the hold handed in (R1.1). */
   fresh: number;
   /** The hold was used (handed in and not refused). */
@@ -45,11 +45,23 @@ export type HoldRefusal = 'held-not-object' | 'held-not-point' | 'held-box' | 'h
 
 /**
  * Which picture a press drew: kept only when the hold kept something (a hold that shares no id with
- * the answer is a fresh picture); lost when the hold could not be read or the method refused it.
+ * the answer is a fresh picture); old when the kept picture was made by an earlier version of the
+ * method (dropped, never handed in); lost when the hold could not be read or the method refused it.
  */
-export function pictureFrom(answer: Pick<Links3dAnswer, 'heldUsed' | 'fresh' | 'ids' | 'refused'>, hold: 'held' | 'none' | 'lost' | 'no-store'): 'nothing' | 'kept' | 'lost' {
+export function pictureFrom(answer: Pick<Links3dAnswer, 'heldUsed' | 'fresh' | 'ids' | 'refused'>, hold: 'held' | 'none' | 'lost' | 'no-store' | 'old'): 'nothing' | 'kept' | 'lost' | 'old' {
   if (answer.heldUsed && answer.fresh < answer.ids.length) return 'kept';
+  if (hold === 'old') return 'old';
   return hold === 'lost' || answer.refused ? 'lost' : 'nothing';
+}
+
+/**
+ * The world's Maps and Pins as the method reads them for the plate: each with its type, a Pin's
+ * `map` the id it names (served as an id or an expanded object). `pins` null: no Pin was read (past
+ * their ceiling), no plate. The press reads no Markers, so none is handed: a Map with no written size
+ * is measured from its Pins alone, where the method would measure it from its Markers too.
+ */
+export function spaceOf(maps: readonly Row[], pins: readonly Row[] | null): Row[] {
+  return [...maps.map((m) => ({ ...m, type: 'map' })), ...(pins ?? []).map((p) => ({ ...p, type: 'pin', map: linkId(p.map) ?? p.map }))];
 }
 
 /** Each point rounded with the SDK's own rounding, in the answer's frame (what the hold keeps). */
@@ -127,6 +139,8 @@ export const CHANGE_BARE_LINE = 'The method is not final.';
 export const FRESH_LINE = 'Laid out from nothing.';
 export const AGAIN_BUTTON = 'Lay out again from nothing';
 export const LOST_LINE = 'No kept picture could be used, so this one was laid out from nothing.';
+/** A picture kept by an earlier version of the method: dropped, said once. */
+export const OLD_LINE = 'The layout method has changed since the picture you last saw here, so that picture was dropped and this one was laid out from nothing.';
 export const NO_STORE_LINE = 'This browser keeps no storage for the mapper here, so the picture is not kept: the next press lays it out from nothing.';
 export const NOT_KEPT_LINE = 'This picture could not be kept on this device, so the next press lays it out from nothing.';
 export const NO_PLATE_LINE = `The world’s map was too large to use (more than ${PIN_CEILING.toLocaleString('en-US')} Pins), so this picture has no plate: its pinned elements are laid out with the rest.`;
@@ -135,6 +149,23 @@ export const FAILED_LINE = 'This world could not be laid out.';
 export const STOPPED_LINE = 'Stopped. Nothing was drawn.';
 export const CANCEL_BUTTON = 'Cancel';
 export const START_BUTTON = 'Lay out';
+
+/**
+ * What the picture does not place: the elements linked to no other and on no plate, counted (the
+ * line the 2D layout maps give what they do not place). Nothing at 0.
+ */
+export function unplacedWords3d(n: number): string | null {
+  if (n <= 0) return null;
+  const one = n === 1;
+  return `${n.toLocaleString('en-US')} ${one ? 'element' : 'elements'} you can see ${one ? 'links' : 'link'} to no other and ${one ? 'stands' : 'stand'} on no plate, so this picture does not place ${one ? 'it' : 'them'}.`;
+}
+
+/** Nothing placed, though the reader sees some elements: none of them links to another or stands on a plate. */
+export function emptyWords3d(unplaced: number): string {
+  if (unplaced <= 0) return EMPTY_LINE;
+  const one = unplaced === 1;
+  return `Nothing to lay out for you here: the ${one ? 'element' : `${unplaced.toLocaleString('en-US')} elements`} you can see ${one ? 'links' : 'link'} to no other and ${one ? 'stands' : 'stand'} on no plate.`;
+}
 
 /** The line under the picture: which picture it drew. */
 export function keptWords(fresh: number): string {

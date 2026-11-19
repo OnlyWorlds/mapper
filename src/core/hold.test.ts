@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BY_LINKS_3D_VERSION } from '@onlyworlds/sdk';
-import { decodeHold, encodeHold, flatHold, HOLD_BUDGET, holdKey, holdsFor, isPublicKey, keepHold, keyHash12, pageHolds, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
+import { decodeHold, encodeHold, flatHold, HOLD_BUDGET, holdKey, holdsFor, isOldHold, isPublicKey, keepHold, keyHash12, pageHolds, readHold, unflatHold, type HoldBackend, type HoldValue } from './hold';
 
 const W = '0199c3a1-0000-7000-8000-00000000000a';
 
@@ -97,7 +97,7 @@ describe('keeping and reading', () => {
 
   it('a value it cannot use, a read that throws, or no storage is said, never thrown', async () => {
     const b = memory();
-    b.rows.set(key(1), { v: 1, key: key(1), at: 0, ids: ['a'], xyz: new Float64Array([1]) });
+    b.rows.set(key(1), { v: 1, m: BY_LINKS_3D_VERSION, key: key(1), at: 0, ids: ['a'], xyz: new Float64Array([1]) });
     expect((await readHold(async () => b, key(1))).state).toBe('lost');
     expect((await readHold(async () => memory({ get: new DOMException('x', 'UnknownError') }), key(1))).state).toBe('lost');
     expect((await readHold(async () => Promise.reject(new Error('no storage')), key(1))).state).toBe('no-store');
@@ -204,14 +204,42 @@ describe('keeping and reading', () => {
   it('a hold made by another version of the method is none; one written before the version was kept is version 1', async () => {
     const k = holdKey(W, 'public', { reader: 'public' });
     const value = encodeHold(k, ['a'], [1, 2, 3], 1);
-    expect(value.m).toBe(BY_LINKS_3D_VERSION);
+    expect(BY_LINKS_3D_VERSION).toBe(2);
+    expect(value.m).toBe(2);
     expect(decodeHold(value, k)).not.toBeNull();
-    expect(decodeHold({ ...value, m: BY_LINKS_3D_VERSION + 1 }, k)).toBeNull();
+    expect(decodeHold({ ...value, m: 3 }, k)).toBeNull();
     const { m: _m, ...older } = value;
-    expect(decodeHold(older, k)).toEqual(BY_LINKS_3D_VERSION === 1 ? decodeHold(value, k) : null);
-    const b = memory();
-    await b.put(k, { ...value, m: BY_LINKS_3D_VERSION + 1 });
-    expect((await readHold(async () => b, k)).state).toBe('lost');
+    expect(decodeHold(older, k)).toBeNull();
+    expect(decodeHold({ ...value, m: 1 }, k)).toBeNull();
+    expect(isOldHold(older, k)).toBe(true);
+    expect(isOldHold({ ...value, m: 1 }, k)).toBe(true);
+    expect(isOldHold(value, k)).toBe(false);
+    // Another key's, or not this page's shape: never old, only a value that could not be read.
+    expect(isOldHold({ ...older, key: 'other' }, k)).toBe(false);
+    expect(isOldHold({ ...older, v: 2 }, k)).toBe(false);
+    expect(isOldHold(null, k)).toBe(false);
+  });
+
+  it('a hold saved under version 1 is read as old and dropped from its storage, so it is said once', async () => {
+    const k = holdKey(W, 'public', { reader: 'public' });
+    const value = encodeHold(k, ['a', 'b'], [1, 2, 3, 4, 5, 6], 1);
+    for (const v1 of [{ ...value, m: 1 }, (({ m: _m, ...rest }) => rest)(value)]) {
+      const b = memory();
+      await b.put(k, v1 as HoldValue);
+      expect(await readHold(async () => b, k)).toEqual({ state: 'old' });
+      expect(b.rows.has(k)).toBe(false);
+      expect(await readHold(async () => b, k)).toEqual({ state: 'none' });
+    }
+    // A storage that refuses the drop still answers old (the next keep replaces it).
+    const stuck = memory({ delete: new Error('refused') });
+    await stuck.put(k, { ...value, m: 1 });
+    expect((await readHold(async () => stuck, k)).state).toBe('old');
+    // The current version's hold is held; a corrupt one of the current version is lost, not old.
+    const now = memory();
+    await now.put(k, value);
+    expect((await readHold(async () => now, k)).state).toBe('held');
+    await now.put(k, { ...value, xyz: new Float64Array([1.5, 2, 3, 4, 5, 6]) });
+    expect((await readHold(async () => now, k)).state).toBe('lost');
   });
 
   it('a public key is the public rung and the public reader, part by part', () => {

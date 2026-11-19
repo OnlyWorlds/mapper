@@ -87,13 +87,9 @@ Object.defineProperty(window, '__mapper', {
     get signedIn() {
       return app.signedIn;
     },
-    /** The 3D layout's last press: how it drew, its times, its points (rounded, in the answer's own frame). */
+    /** The 3D layout's last press: how it drew, its times, its points (rounded, in the answer's own frame), what it did not place. */
     get links3d() {
       return app.links3d ? structuredClone(app.links3d) : null;
-    },
-    /** The shelf as drawn beside the groups (the answer's own points are `links3d.xyz`). */
-    get floor3d() {
-      return app.floor3d ? structuredClone(app.floor3d) : null;
     },
   }),
 });

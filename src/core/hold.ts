@@ -62,6 +62,16 @@ export function encodeHold(key: string, ids: readonly string[], rounded: ArrayLi
 }
 
 /**
+ * A value this page wrote for `key` under another version of the method (or before the version was
+ * kept, which is version 1's): its points are no picture the method gives now, so it is dropped.
+ */
+export function isOldHold(raw: unknown, key: string): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const v = raw as Partial<HoldValue>;
+  return v.v === 1 && v.key === key && (v.m ?? 1) !== BY_LINKS_3D_VERSION;
+}
+
+/**
  * A stored value read back as the hold for `key`: a Map from id to its point (never an object keyed
  * by ids), or null for a value this page did not write for this key (corrupt, foreign, another key's).
  */
@@ -97,8 +107,11 @@ export function unflatHold(flat: { ids: readonly string[]; xyz: Float64Array }):
   return m;
 }
 
-/** What reading a hold found: one, none, or something that could not be read (said in one line). */
-export type HoldRead = { state: 'held'; held: Map<string, Float64Array> } | { state: 'none' } | { state: 'lost' } | { state: 'no-store' };
+/**
+ * What reading a hold found: one, none, something that could not be read, or one an earlier version
+ * of the method made (dropped); each but none and held said in one line.
+ */
+export type HoldRead = { state: 'held'; held: Map<string, Float64Array> } | { state: 'none' } | { state: 'lost' } | { state: 'no-store' } | { state: 'old' };
 
 /** How long a storage step may take before the press goes on without it. */
 export const HOLD_WAIT_MS = 2000;
@@ -155,6 +168,16 @@ export async function readHold(open: () => Promise<HoldBackend>, key: string, si
   }
   if (raw === LATE) return { state: 'lost' };
   if (raw === undefined || raw === null) return { state: 'none' };
+  if (isOldHold(raw, key)) {
+    // Dropped where it is read, so it is said once even when this press keeps nothing; a storage
+    // that does not answer in time leaves it for the next press's keep to replace.
+    try {
+      await within(b.delete(key), ms, signal);
+    } catch {
+      /* the next keep replaces it */
+    }
+    return { state: 'old' };
+  }
   const held = decodeHold(raw, key);
   return held ? { state: 'held', held } : { state: 'lost' };
 }

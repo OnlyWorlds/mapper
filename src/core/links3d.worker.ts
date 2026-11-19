@@ -8,7 +8,7 @@ const scope = self as unknown as { onmessage: ((e: MessageEvent<Links3dInput>) =
 scope.onmessage = (e) => {
   try {
     const answer = layOut(e.data);
-    scope.postMessage({ ok: true, answer }, [answer.points.buffer, answer.piece.buffer]);
+    scope.postMessage({ ok: true, answer }, [answer.points.buffer]);
   } catch (err) {
     scope.postMessage({ ok: false, message: err instanceof Error ? `${err.name}: ${err.message}` : String(err) });
   }
