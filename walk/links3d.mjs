@@ -11,10 +11,13 @@ const UNSAVED = 'Not saved: the mapper writes nothing. Atlas saves a layout.';
 const CHANGE = 'The method is not final; this device keeps the picture still meanwhile.';
 const FRESH = 'Laid out from nothing.';
 const LOST = 'No kept picture could be used, so this one was laid out from nothing.';
+const OLD = 'The layout method has changed since the picture you last saw here, so that picture was dropped and this one was laid out from nothing.';
+const notPlaced = (n) => `${n} ${n === 1 ? 'element' : 'elements'} you can see ${n === 1 ? 'links' : 'link'} to no other and ${n === 1 ? 'stands' : 'stand'} on no plate, so this picture does not place ${n === 1 ? 'it' : 'them'}.`;
 const kept = (n) => `Kept the picture you last saw here; ${n} placed new.`;
 const CEILING = 'This world holds more than 10,000 elements you can see, too many for the mapper to lay out here.';
 const NO_PLATE = 'The world’s map was too large to use (more than 10,000 Pins), so this picture has no plate: its pinned elements are laid out with the rest.';
 const EMPTY = 'Nothing to lay out for you here.';
+const EMPTY_LONE = 'Nothing to lay out for you here: the 2 elements you can see link to no other and stand on no plate.';
 const STOPPED = 'Stopped. Nothing was drawn.';
 const HEAD = 'By links, in 3D (not saved)';
 const KIND = 'a layout · 3D · not saved';
@@ -26,14 +29,23 @@ const EMPTYW = '89898989-8989-7989-8989-898989898989'; // no element for this re
 const BIG = '8a8a8a8a-8a8a-7a8a-8a8a-8a8a8a8a8a8a'; // 12,001 served Characters by its counts
 const NOCOUNT = '8b8b8b8b-8b8b-7b8b-8b8b-8b8b8b8b8b8b'; // no counts served, 10,001 Characters
 const PINBIG = '8c8c8c8c-8c8c-7c8c-8c8c-8c8c8c8c8c8c'; // 20,000 Pins by its counts
-// A Map whose width is below 0 pinning three Locations: since SDK 4.171.1 such a Map is no plate
-// (4.171.0 threw on it), so the picture is drawn with no element on a plate.
+// A Map whose width is below 0 pinning three Locations, linked to each other: since SDK 4.171.1
+// such a Map is no plate (4.171.0 threw on it), so the picture is drawn with no element on a plate
+// (linked, they are placed: an element linked to nothing and on no plate is not, since 4.182.0).
 const BENT = '8e8e8e8e-8e8e-7e8e-8e8e-8e8e8e8e8e8e';
 const SLOW = '8d8d8d8d-8d8d-7d8d-8d8d-8d8d8d8d8d8d'; // 2,000 Characters richly linked, for a Cancel while the layout runs
+const LONE = '8f8f8f8f-8f8f-7f8f-8f8f-8f8f8f8f8f8f'; // two Characters linked to nothing and pinned nowhere: nothing placed
 const COAST = lid(LW, 1);
 const C = (n) => lid(LW, 100 + n);
 const L = (n) => lid(LW, 200 + n);
 const NEW = C(9);
+// Gil and Cairn link to nothing and stand on no plate: listed, never drawn (by id, in code point order).
+const UNPLACED = [C(7), L(4)];
+/** Each placed element's neighbours by its links (Hale, hidden, cut): a press's focus is it and these. */
+const NEAR = {
+  [C(1)]: [C(2), C(3), L(1)], [C(2)]: [C(1), C(3), L(2)], [C(3)]: [C(1), C(2), C(4)], [C(4)]: [C(3), C(5), C(6), L(3)], [C(5)]: [C(4), C(6)], [C(6)]: [C(4), C(5)],
+  [L(1)]: [C(1), L(2), L(3)], [L(2)]: [C(2), L(1)], [L(3)]: [C(4), L(1)],
+};
 
 const TYPES = ['ability', 'character', 'collective', 'construct', 'creature', 'event', 'family', 'institution', 'language', 'law', 'location', 'map', 'marker', 'narrative', 'object', 'phenomenon', 'pin', 'relation', 'species', 'title', 'trait', 'zone'];
 const counts = (some) => Object.fromEntries(TYPES.map((t) => [t, some[t] ?? 0]));
@@ -111,7 +123,12 @@ function answer(url, state) {
     if (is('world')) return json(200, { id: BENT, name: 'Bent', counts: { total: 7, types: counts({ map: 1, pin: 3, location: 3 }) } });
     if (is('map')) return pick([{ id: bent, type: 'map', name: 'Bent', width: -5, height: 100 }]);
     if (is('pin')) return pick([1, 2, 3].map((n) => ({ id: lid(BENT, 20 + n), type: 'pin', map: bent, element_type: 'location', element_id: lid(BENT, 10 + n), x: 10 * n, y: 10 })));
-    if (is('location')) return pick([1, 2, 3].map((n) => ({ id: lid(BENT, 10 + n), type: 'location', name: `Bend ${n}` })));
+    if (is('location')) return pick([1, 2, 3].map((n) => ({ id: lid(BENT, 10 + n), type: 'location', name: `Bend ${n}`, ...(n > 1 ? { parent_location: lid(BENT, 11) } : {}) })));
+    return page1([]);
+  }
+  if (w === LONE) {
+    if (is('world')) return json(200, { id: LONE, name: 'Lone', counts: { total: 2, types: counts({ character: 2 }) } });
+    if (is('character')) return pick([{ id: lid(LONE, 11), type: 'character', name: 'Ash' }, { id: lid(LONE, 12), type: 'character', name: 'Bay' }]);
     return page1([]);
   }
   if (w === SLOW) {
@@ -186,7 +203,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
       g.onsuccess = () => {
         const v = g.result;
         d.close();
-        ok(v ? { ids: v.ids, xyz: [...v.xyz], at: v.at } : null);
+        ok(v ? { ids: v.ids, xyz: [...v.xyz], at: v.at, m: v.m ?? null } : null);
       };
       g.onerror = () => ok(null);
     };
@@ -241,7 +258,11 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   state.slow = null;
   const first = await info();
   const reads1 = wholeReads(from);
-  check(`${vp} links3d the picture is drawn: one Pin per element this reader sees (11 of 12, the hidden one cut), with links`, ok1 && first?.nodes === 11 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 11 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) >= 8 && (await page.locator('.status .counts').innerText()) === '11 elements · 12 link lines', JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
+  check(`${vp} links3d the picture is drawn: one Pin per element it places (9 of the 11 this reader sees, the hidden one cut), with links`, ok1 && first?.nodes === 9 && (await page.evaluate(() => window.__mapper.scene.counts.pins)) === 9 && (await page.evaluate(() => window.__mapper.scene.counts.lines)) === 12 && (await page.locator('.status .counts').innerText()) === '9 elements · 12 link lines', JSON.stringify({ nodes: first?.nodes, counts: await page.evaluate(() => window.__mapper.scene?.counts) }));
+  const drawnEls = (await page.evaluate(() => window.__mapper.pins())).map((p) => p.element);
+  check(`${vp} links3d the two linked to nothing are listed, never drawn: no Pin and no point for them`, JSON.stringify(first?.unplaced) === JSON.stringify(UNPLACED) && UNPLACED.every((u) => !drawnEls.includes(u) && !first.ids.includes(u)) && first.xyz.length === 3 * first.ids.length, JSON.stringify({ unplaced: first?.unplaced, drawn: drawnEls.length }));
+  const unplacedLine = async () => ((await page.locator('.status .unplaced').count()) ? (await page.locator('.status .unplaced').first().innerText()).trim() : null);
+  check(`${vp} links3d one line says what the picture does not place: "${notPlaced(2)}"`, (await unplacedLine()) === notPlaced(2) && (await page.locator('.status .unplaced').count()) === 1, String(await unplacedLine()));
   check(`${vp} links3d the world's map is the plate: its four pinned elements stand at their Pins`, first?.plate === 4, JSON.stringify({ plate: first?.plate }));
   check(`${vp} links3d a first press says "${FRESH}"`, (await heldLine()) === FRESH, String(await heldLine()));
   check(`${vp} links3d the bar names the map and its kind`, (await page.locator('.map-name').innerText()) === HEAD && (await page.locator('.kind').innerText()) === KIND, `${await page.locator('.kind').innerText()}`);
@@ -289,11 +310,45 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   check(`${vp} links3d the address is unchanged by the drawing (no map, no camera)`, (await where()) === `?world=${LW}&layout=by-links-3d`, await where());
   if (!phone) console.log(`  links3d ${which} measure: Linkwater, ${first?.nodes} elements: layout in the worker ${first?.layoutMs?.toFixed(1)} ms, build ${first?.buildMs?.toFixed(1)} ms`);
 
+  if (!phone && on3d) {
+    // Hover, press and focus with fewer points than nodes: a Pin clear of every other, found by its id.
+    const ps = await page.evaluate(() => window.__mapper.pins());
+    const seen = [];
+    for (const p of ps) seen.push(await page.evaluate((x) => window.__mapper.screenOf(x), p.id));
+    const vw = page.viewportSize();
+    let target = null;
+    for (const [i, p] of ps.entries()) {
+      const pt = seen[i];
+      if (!pt || pt.x < 60 || pt.x > vw.width * 0.6 || pt.y < vw.height * 0.3 || pt.y > vw.height * 0.85) continue;
+      if (!seen.every((q) => !q || q === pt || Math.hypot(q.x - pt.x, q.y - pt.y) >= 24)) continue;
+      if (!String(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.className ?? '', [pt.x, pt.y])).includes('surface-3d')) continue;
+      target = { ...p, ...pt };
+      break;
+    }
+    check(`${vp} links3d a placed Pin stands clear to point at`, !!target, JSON.stringify(seen.slice(0, 3)));
+    if (target) {
+      await page.mouse.move(target.x, target.y);
+      await page.waitForTimeout(250);
+      const hovered = (await page.evaluate(() => document.querySelector('canvas.surface-3d').style.cursor)) === 'pointer';
+      const look = await page.evaluate((x) => window.__mapper.drawn3d(x), target.id);
+      check(`${vp} links3d hovering a placed Pin finds it, drawn where its own point is`, hovered && !!look && Math.hypot(look.x - target.x, look.y - target.y) < 1, JSON.stringify({ hovered, look }));
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+      const sel = await page.evaluate(() => window.__mapper.selection);
+      const focus = (await page.evaluate(() => window.__mapper.view3d))?.focus;
+      const near = NEAR[target.element] ?? [];
+      check(`${vp} links3d a press selects it, and its focus is it and the Pins its links reach`, JSON.stringify(sel) === JSON.stringify([target.id]) && !!focus && focus.pins === 1 + near.length && focus.lines === near.length, JSON.stringify({ sel, focus, want: near.length }));
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+    }
+  }
+
   // The card and the List: names and types from this page's rows, no position line.
   await page.locator('.tools button', { hasText: 'List' }).click();
   await page.waitForSelector('.list-rows .row', { timeout: 5000 }).catch(() => {});
   const listMeta = await page.locator('.list-rows .row-meta').allInnerTexts();
-  check(`${vp} links3d the List names each element and its type, no position`, listMeta.length === 11 && listMeta.every((m) => /^(Character|Location)$/.test(m)), JSON.stringify(listMeta.slice(0, 4)));
+  check(`${vp} links3d the List names each element it places and its type, no position`, listMeta.length === 9 && listMeta.every((m) => /^(Character|Location)$/.test(m)), JSON.stringify(listMeta.slice(0, 4)));
   await page.locator('.list-rows .row', { hasText: 'Port' }).first().click();
   await page.waitForTimeout(400);
   const card = await page.locator('.card').innerText().catch(() => '');
@@ -303,7 +358,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
 
   // 3. The hold: kept on this device, per world and reader, the rounded points in the answer's frame.
   const h1 = await holdOf(KEY);
-  check(`${vp} links3d the picture is kept on this device under the world and the public reader`, !!h1 && JSON.stringify(h1.ids) === JSON.stringify(first.ids) && JSON.stringify(h1.xyz) === JSON.stringify(first.xyz) && h1.xyz.every(Number.isInteger), JSON.stringify(h1)?.slice(0, 160));
+  check(`${vp} links3d the picture is kept on this device under the world and the public reader, with the method's version`, !!h1 && JSON.stringify(h1.ids) === JSON.stringify(first.ids) && JSON.stringify(h1.xyz) === JSON.stringify(first.xyz) && h1.xyz.every(Number.isInteger) && h1.m === 2, JSON.stringify(h1)?.slice(0, 160));
 
   // 4. Back to the world's maps: the made-up Map is in no list and no count.
   await page.locator('button.back').click();
@@ -317,7 +372,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   // back at the moved point, which the method could not have made by itself.
   const STEP = [600, -300, 120];
   const moved = { ...h1, xyz: h1.xyz.map((v, i) => v + STEP[i % 3]), at: Date.now() };
-  await plant(KEY, { v: 1, key: KEY, ...moved });
+  await plant(KEY, { v: 1, key: KEY, ...moved });  // h1 carries its version, `m`
   from = sent.length;
   await page.locator('.links3d-offer button.links3d-press').click();
   await drawn();
@@ -329,7 +384,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
   const pinned = new Set([L(1), L(2), L(3), C(4)]);
   const off = [...want].filter(([k, v]) => !pinned.has(k) && got.get(k) !== v).map(([k]) => k);
   const pinnedOff = [...want].filter(([k, v]) => pinned.has(k) && got.get(k) !== v).length;
-  check(`${vp} links3d every kept element that is not pinned stands at its held point, moved by a known step, to the unit`, !!second && off.length === 0 && want.size === 11, `${off.length} of 7 off; pinned elements off their moved point: ${pinnedOff} of 4`);
+  check(`${vp} links3d every kept element that is not pinned stands at its held point, moved by a known step, to the unit`, !!second && off.length === 0 && want.size === 9, `${off.length} of 5 off; pinned elements off their moved point: ${pinnedOff} of 4`);
 
   if (!phone) {
     // 6. Lay out again from nothing: drawn fresh, without the hold, and the hold replaced.
@@ -393,20 +448,34 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     const now = pointsById(third);
     const moved = [...was].filter(([k, v]) => now.get(k) !== v).map(([k]) => k);
     check(`${vp} links3d an element added between presses (a reload between): "${kept(1)}"`, (await heldLine()) === kept(1) && third?.fresh === 1 && now.has(NEW) && !was.has(NEW), String(await heldLine()));
-    check(`${vp} links3d nothing else moved: every kept element's point equal by bytes, in the answer's frame`, moved.length === 0 && was.size === 11, `${moved.length} moved of ${was.size}`);
+    check(`${vp} links3d nothing else moved: every kept element's point equal by bytes, in the answer's frame`, moved.length === 0 && was.size === 9, `${moved.length} moved of ${was.size}`);
     state.extra = false;
 
     // 9. A bad hold planted: laid out from nothing, with its line. A corrupt value, then one the method refuses (held-box).
-    await plant(KEY, { v: 1, key: KEY, at: Date.now(), ids: [C(1)], xyz: [1.5, 0, 0] });
+    await plant(KEY, { v: 1, m: 2, key: KEY, at: Date.now(), ids: [C(1)], xyz: [1.5, 0, 0] });
     await page.reload();
     await drawn();
     check(`${vp} links3d a hold that cannot be read is laid out from nothing, and said`, (await heldLine()) === LOST && (await info())?.from === 'lost', String(await heldLine()));
-    await plant(KEY, { v: 1, key: KEY, at: Date.now(), ids: [C(1), C(2)], xyz: [0, 0, 0, 60 * 800, 0, 0] });
+    await plant(KEY, { v: 1, m: 2, key: KEY, at: Date.now(), ids: [C(1), C(2)], xyz: [0, 0, 0, 60 * 800, 0, 0] });
     await page.reload();
     await drawn();
     check(`${vp} links3d a hold the method refuses (held-box) is laid out from nothing, and said`, (await heldLine()) === LOST && (await info())?.from === 'lost', String(await heldLine()));
     const fixed = await holdOf(KEY);
-    check(`${vp} links3d the refused hold is replaced by the new picture`, !!fixed && fixed.ids.length === 11 && fixed.xyz.every(Number.isInteger));
+    check(`${vp} links3d the refused hold is replaced by the new picture`, !!fixed && fixed.ids.length === 9 && fixed.xyz.every(Number.isInteger));
+
+    // 9b. A picture kept under the method's version 1 (written before the version was kept, and with
+    // it written as 1): dropped, the world laid out from nothing, said once; the next press keeps.
+    for (const [how, v1] of [['with no version', { v: 1, key: KEY, at: Date.now(), ids: fixed.ids, xyz: fixed.xyz }], ['as version 1', { v: 1, m: 1, key: KEY, at: Date.now(), ids: fixed.ids, xyz: fixed.xyz }]]) {
+      await plant(KEY, v1);
+      await page.reload();
+      await drawn();
+      const oldSaid = await heldLine();
+      const replaced = await holdOf(KEY);
+      check(`${vp} links3d a picture kept ${how} is dropped and laid out from nothing, said in plain words`, oldSaid === OLD && (await info())?.from === 'old' && replaced?.m === 2, `${oldSaid} | m ${replaced?.m}`);
+      await page.reload();
+      await drawn();
+      check(`${vp} links3d and said once: the next press keeps the new picture`, (await heldLine()) === kept(0) && (await info())?.from === 'kept', String(await heldLine()));
+    }
   }
 
   // 10. Cancel while it reads: nothing drawn after, and the next press reads only what was not read whole.
@@ -469,7 +538,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     const beforeRetry = wholeReads(from);
     await page.locator('.links3d .failure .retry').click();
     await drawn();
-    check(`${vp} links3d Try again draws, reading only what failed and what came after`, JSON.stringify(wholeReads(from).slice(beforeRetry.length)) === JSON.stringify(['location']) && (await info())?.nodes === 11, `${JSON.stringify(beforeRetry)} then ${JSON.stringify(wholeReads(from).slice(beforeRetry.length))}`);
+    check(`${vp} links3d Try again draws, reading only what failed and what came after`, JSON.stringify(wholeReads(from).slice(beforeRetry.length)) === JSON.stringify(['location']) && (await info())?.nodes === 9, `${JSON.stringify(beforeRetry)} then ${JSON.stringify(wholeReads(from).slice(beforeRetry.length))}`);
 
     // 14. The ceiling: no press offered, and a shared link reads nothing.
     await page.goto(`${base}/?world=${BIG}`);
@@ -492,7 +561,10 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     from = sent.length;
     await page.goto(`${base}/?world=${PINBIG}&layout=by-links-3d`);
     await drawn();
-    check(`${vp} links3d Pins past their ceiling: drawn with no plate, said, and no Pin read`, (await statusText()).includes(NO_PLATE) && !sent.slice(from).some((u) => u.pathname.startsWith('/api/v2/pin')) && (await info())?.nodes === 3, (await statusText()).slice(0, 300));
+    check(`${vp} links3d Pins past their ceiling: drawn with no plate, said, and no Pin read; the one linked to nothing not placed, and said`, (await statusText()).includes(NO_PLATE) && !sent.slice(from).some((u) => u.pathname.startsWith('/api/v2/pin')) && (await info())?.nodes === 2 && (await unplacedLine()) === notPlaced(1), (await statusText()).slice(0, 300));
+    await page.goto(`${base}/?world=${LONE}&layout=by-links-3d`);
+    await waitUntil(page, () => !!document.querySelector('.empty3d'), null, 15_000);
+    check(`${vp} links3d a world whose elements link to nothing places none, and says why`, (await boxText()) === EMPTY_LONE && (await info()) === null, String(await boxText()));
   }
 
   if (!phone) {
@@ -514,7 +586,7 @@ export async function links3dWalk({ browser, which, vp, opts, check, base }) {
     await ctx.unroute(worker);
     await page.locator('.links3d .failure .retry').click();
     await drawn();
-    check(`${vp} links3d its Try again lays out again`, (await info())?.nodes === 11 && (await page.locator('.links3d .failure').count()) === 0, JSON.stringify({ nodes: (await info())?.nodes }));
+    check(`${vp} links3d its Try again lays out again`, (await info())?.nodes === 9 && (await page.locator('.links3d .failure').count()) === 0, JSON.stringify({ nodes: (await info())?.nodes }));
   }
 
   // 18. Nothing written: every request the page made was a GET, and nothing left for OnlyWorlds but reads.
