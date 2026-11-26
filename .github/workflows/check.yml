@@ -1,0 +1,21 @@
+# The typecheck, the build and the unit tests, on every push and every pull request. It reads the
+# repository and nothing else: no secret. The walks (walk/) play recorded answers from the live
+# server, kept out of the repository, so they run elsewhere.
+name: check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
